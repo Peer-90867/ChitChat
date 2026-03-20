@@ -635,19 +635,37 @@ export const ChatDashboard = ({ user }: { user: any }) => {
 
   const fetchMessages = async (roomId: string, isPolling = false) => {
     try {
-      const { data, error } = await supabase
+      const { data: messagesData, error: messagesError } = await supabase
         .from('messages')
         .select(`
           *,
-          profiles:user_id (*),
           reactions (*)
         `)
         .eq('room_id', roomId)
         .order('created_at', { ascending: true });
       
-      if (error) throw error;
+      if (messagesError) throw messagesError;
       
-      if (data) setMessages(data);
+      if (messagesData) {
+        // Fetch unique user_ids
+        const userIds = [...new Set(messagesData.map(m => m.user_id))];
+        
+        // Fetch profiles
+        const { data: profilesData, error: profilesError } = await supabase
+          .from('profiles')
+          .select('*')
+          .in('id', userIds);
+          
+        if (profilesError) throw profilesError;
+        
+        // Map profiles to messages
+        const messagesWithProfiles = messagesData.map(m => ({
+          ...m,
+          profiles: profilesData?.find(p => p.id === m.user_id)
+        }));
+        
+        setMessages(messagesWithProfiles);
+      }
     } catch (error: any) {
       console.error('Error fetching messages:', error);
       // Don't show toast for background polling errors to avoid spamming the user
@@ -2183,12 +2201,15 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                 {members.map((member) => (
                   <div key={member.id} className="flex items-center justify-between group">
                     <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-indigo-400 text-xs font-bold overflow-hidden">
-                        {member.avatar_url ? (
-                          <img src={member.avatar_url} alt="Avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                        ) : (
-                          member.username?.[0]?.toUpperCase() || '?'
-                        )}
+                      <div className="relative">
+                        <div className="w-8 h-8 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-indigo-400 text-xs font-bold overflow-hidden">
+                          {member.avatar_url ? (
+                            <img src={member.avatar_url} alt="Avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                          ) : (
+                            member.username?.[0]?.toUpperCase() || '?'
+                          )}
+                        </div>
+                        <div className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-white dark:border-slate-900 ${onlineUsers.has(member.id) ? 'bg-emerald-500' : 'bg-slate-400'}`} />
                       </div>
                       <div className="flex flex-col">
                         <span className="text-sm font-medium text-slate-600 dark:text-slate-400 group-hover:text-slate-900 dark:group-hover:text-slate-200 transition-colors flex items-center gap-2">

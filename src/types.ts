@@ -30,6 +30,8 @@ export interface Message {
   audio_url?: string;
   image_url?: string;
   is_pinned?: boolean;
+  reply_to_id?: string;
+  reply_to_message?: Message;
   link_preview?: {
     title?: string;
     description?: string;
