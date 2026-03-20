@@ -27,6 +27,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
 import { customAlphabet } from 'nanoid';
+import { Toast } from '../ui/Toast';
 
 const generateRoomCode = customAlphabet('123456789ABCDEFGHJKLMNPQRSTUVWXYZ', 6);
 
@@ -229,14 +230,22 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   };
 
   const fetchProfile = async () => {
-    const { data } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', user.id)
-      .single();
-    if (data) {
-      setProfile(data);
-      setEditUsername(data.username || '');
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', user.id)
+        .single();
+      
+      if (error) throw error;
+      
+      if (data) {
+        setProfile(data);
+        setEditUsername(data.username || '');
+      }
+    } catch (error: any) {
+      console.error('Error fetching profile:', error);
+      showToast('Failed to load profile settings', 'error');
     }
   };
 
@@ -316,39 +325,61 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   };
 
   const fetchRooms = async () => {
-    const { data, error } = await supabase
-      .from('room_members')
-      .select('rooms (*)')
-      .eq('user_id', user.id);
-    
-    if (data) {
-      const formattedRooms = data.map((item: any) => item.rooms);
-      setRooms(formattedRooms);
-      if (formattedRooms.length > 0 && !activeRoom) {
-        setActiveRoom(formattedRooms[0]);
+    try {
+      const { data, error } = await supabase
+        .from('room_members')
+        .select('rooms (*)')
+        .eq('user_id', user.id);
+      
+      if (error) throw error;
+      
+      if (data) {
+        const formattedRooms = data.map((item: any) => item.rooms);
+        setRooms(formattedRooms);
+        if (formattedRooms.length > 0 && !activeRoom) {
+          setActiveRoom(formattedRooms[0]);
+        }
       }
+    } catch (error: any) {
+      console.error('Error fetching rooms:', error);
+      showToast('Failed to load your rooms', 'error');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   const fetchMessages = async (roomId: string) => {
-    const { data } = await supabase
-      .from('messages')
-      .select('*, profiles (*), reactions (*)')
-      .eq('room_id', roomId)
-      .order('created_at', { ascending: true });
-    
-    if (data) setMessages(data);
+    try {
+      const { data, error } = await supabase
+        .from('messages')
+        .select('*, profiles (*), reactions (*)')
+        .eq('room_id', roomId)
+        .order('created_at', { ascending: true });
+      
+      if (error) throw error;
+      
+      if (data) setMessages(data);
+    } catch (error: any) {
+      console.error('Error fetching messages:', error);
+      showToast('Failed to load message history', 'error');
+    }
   };
 
   const fetchMembers = async (roomId: string) => {
-    const { data } = await supabase
-      .from('room_members')
-      .select('profiles (*)')
-      .eq('room_id', roomId);
-    
-    if (data) {
-      setMembers(data.map((item: any) => item.profiles));
+    try {
+      const { data, error } = await supabase
+        .from('room_members')
+        .select('profiles (*)')
+        .eq('room_id', roomId);
+      
+      if (error) throw error;
+      
+      if (data) {
+        setMembers(data.map((item: any) => item.profiles));
+      }
+    } catch (error: any) {
+      console.error('Error fetching members:', error);
+      showToast('Failed to load room members', 'error');
     }
   };
 
@@ -462,33 +493,47 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     const content = newMessage;
     setNewMessage('');
 
-    const { error } = await supabase
-      .from('messages')
-      .insert([{ 
-        room_id: activeRoom.id, 
-        user_id: user.id, 
-        content 
-      }]);
+    try {
+      const { error } = await supabase
+        .from('messages')
+        .insert([{ 
+          room_id: activeRoom.id, 
+          user_id: user.id, 
+          content 
+        }]);
 
-    if (error) console.error(error);
+      if (error) throw error;
+    } catch (error: any) {
+      console.error('Error sending message:', error);
+      showToast(error.message || 'Failed to send message. Please check your connection.', 'error');
+      setNewMessage(content); // Restore message on failure
+    }
   };
 
   const handleToggleReaction = async (messageId: string, emoji: string) => {
-    const existingReaction = messages
-      .find(m => m.id === messageId)
-      ?.reactions?.find(r => r.user_id === user.id && r.emoji === emoji);
+    try {
+      const existingReaction = messages
+        .find(m => m.id === messageId)
+        ?.reactions?.find(r => r.user_id === user.id && r.emoji === emoji);
 
-    if (existingReaction) {
-      await supabase
-        .from('reactions')
-        .delete()
-        .eq('id', existingReaction.id);
-    } else {
-      await supabase
-        .from('reactions')
-        .insert([{ message_id: messageId, user_id: user.id, emoji }]);
+      if (existingReaction) {
+        const { error } = await supabase
+          .from('reactions')
+          .delete()
+          .eq('id', existingReaction.id);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from('reactions')
+          .insert([{ message_id: messageId, user_id: user.id, emoji }]);
+        if (error) throw error;
+      }
+    } catch (error: any) {
+      console.error('Error toggling reaction:', error);
+      showToast(error.message || 'Failed to add reaction', 'error');
+    } finally {
+      setActiveEmojiPicker(null);
     }
-    setActiveEmojiPicker(null);
   };
 
   const filteredMessages = searchQuery.trim() 
@@ -499,6 +544,17 @@ export const ChatDashboard = ({ user }: { user: any }) => {
 
   return (
     <div className="flex h-screen bg-[#020617] text-slate-200 overflow-hidden relative">
+      {/* Toast Notifications */}
+      <AnimatePresence>
+        {toast && (
+          <Toast 
+            message={toast.message} 
+            type={toast.type} 
+            onClose={() => setToast(null)} 
+          />
+        )}
+      </AnimatePresence>
+
       {/* Mobile Sidebar Drawer */}
       <AnimatePresence>
         {isMobileMenuOpen && (

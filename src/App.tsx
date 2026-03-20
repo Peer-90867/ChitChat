@@ -4,6 +4,7 @@ import { LandingPage } from './components/LandingPage';
 import { AuthForm } from './components/auth/AuthForm';
 import { ChatDashboard } from './components/chat/ChatDashboard';
 import { motion, AnimatePresence } from 'motion/react';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 export default function App() {
   const [session, setSession] = useState<any>(null);
@@ -37,38 +38,40 @@ export default function App() {
   }
 
   return (
-    <AnimatePresence mode="wait">
-      {!session ? (
-        showAuth ? (
-          <motion.div
-            key="auth"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-          >
-            <AuthForm />
-          </motion.div>
+    <ErrorBoundary>
+      <AnimatePresence mode="wait">
+        {!session ? (
+          showAuth ? (
+            <motion.div
+              key="auth"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+            >
+              <AuthForm />
+            </motion.div>
+          ) : (
+            <motion.div
+              key="landing"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+            >
+              <LandingPage onGetStarted={() => setShowAuth(true)} />
+            </motion.div>
+          )
         ) : (
           <motion.div
-            key="landing"
+            key="dashboard"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
+            className="h-screen"
           >
-            <LandingPage onGetStarted={() => setShowAuth(true)} />
+            <ChatDashboard user={session.user} />
           </motion.div>
-        )
-      ) : (
-        <motion.div
-          key="dashboard"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          className="h-screen"
-        >
-          <ChatDashboard user={session.user} />
-        </motion.div>
-      )}
-    </AnimatePresence>
+        )}
+      </AnimatePresence>
+    </ErrorBoundary>
   );
 }
