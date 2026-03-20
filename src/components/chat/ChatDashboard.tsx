@@ -39,10 +39,9 @@ import {
   Paperclip,
   SmilePlus,
   Sun,
-  Moon,
-  Reply
+  Moon
 } from 'lucide-react';
-import { motion, AnimatePresence, useMotionValue, useTransform } from 'motion/react';
+import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
 import ReactMarkdown from 'react-markdown';
 import { customAlphabet } from 'nanoid';
@@ -55,76 +54,11 @@ import { useTheme } from '../../context/ThemeContext';
 
 const generateRoomCode = customAlphabet('123456789ABCDEFGHJKLMNPQRSTUVWXYZ', 6);
 
-const SwipeableMessageRow = ({ 
-  msg, 
-  isMe, 
-  onReply, 
-  onDelete, 
-  children 
-}: { 
-  msg: Message, 
-  isMe: boolean, 
-  onReply: () => void, 
-  onDelete: () => void, 
-  children: React.ReactNode 
-}) => {
-  const x = useMotionValue(0);
-  
-  // Opacity of icons based on drag distance
-  const replyOpacity = useTransform(x, [0, 50], [0, 1]);
-  const deleteOpacity = useTransform(x, [0, -50], [0, 1]);
-
-  return (
-    <div className="relative w-full overflow-hidden">
-      {/* Background Actions */}
-      <motion.div 
-        className="absolute left-0 top-0 bottom-0 flex items-center justify-center w-16"
-        style={{ opacity: replyOpacity }}
-      >
-        <div className="w-8 h-8 rounded-full bg-indigo-100 dark:bg-indigo-900/50 flex items-center justify-center text-indigo-500">
-          <Reply className="w-4 h-4" />
-        </div>
-      </motion.div>
-      
-      {isMe && (
-        <motion.div 
-          className="absolute right-0 top-0 bottom-0 flex items-center justify-center w-16"
-          style={{ opacity: deleteOpacity }}
-        >
-          <div className="w-8 h-8 rounded-full bg-red-100 dark:bg-red-900/50 flex items-center justify-center text-red-500">
-            <Trash2 className="w-4 h-4" />
-          </div>
-        </motion.div>
-      )}
-
-      {/* Draggable Content */}
-      <motion.div
-        drag="x"
-        dragConstraints={{ left: 0, right: 0 }}
-        dragElastic={0.2}
-        style={{ x }}
-        onDragEnd={(e, info) => {
-          if (info.offset.x > 50) {
-            onReply();
-          } else if (info.offset.x < -50 && isMe) {
-            onDelete();
-          }
-        }}
-        className="w-full relative z-10"
-      >
-        {children}
-      </motion.div>
-    </div>
-  );
-};
-
 export const ChatDashboard = ({ user }: { user: any }) => {
   const { theme, toggleTheme } = useTheme();
   const [rooms, setRooms] = useState<Room[]>([]);
   const [activeRoom, setActiveRoom] = useState<Room | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
-  const [replyingTo, setReplyingTo] = useState<Message | null>(null);
-  const [scrollToMessageId, setScrollToMessageId] = useState<string | null>(null);
   const [members, setMembers] = useState<Profile[]>([]);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
@@ -138,8 +72,6 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const [showMembers, setShowMembers] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [newRoomName, setNewRoomName] = useState('');
-  const [isCustomCode, setIsCustomCode] = useState(false);
-  const [customRoomCode, setCustomRoomCode] = useState('');
   const [editRoomName, setEditRoomName] = useState('');
   const [joinCode, setJoinCode] = useState('');
   const [editUsername, setEditUsername] = useState('');
@@ -147,9 +79,6 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const [newMessage, setNewMessage] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
-  const [searchSender, setSearchSender] = useState<string>('all');
-  const [searchDateRange, setSearchDateRange] = useState<'all' | 'today' | 'week' | 'month'>('all');
-  const [searchPinnedOnly, setSearchPinnedOnly] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isLeaving, setIsLeaving] = useState(false);
   const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
@@ -166,15 +95,6 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; messageId: string } | null>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [hasUnread, setHasUnread] = useState(false);
-  const [isOnline, setIsOnline] = useState(window.navigator.onLine);
-  const [offlineQueue, setOfflineQueue] = useState<any[]>(() => {
-    const cached = localStorage.getItem('offlineQueue');
-    return cached ? JSON.parse(cached) : [];
-  });
-
-  useEffect(() => {
-    localStorage.setItem('offlineQueue', JSON.stringify(offlineQueue));
-  }, [offlineQueue]);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -229,28 +149,18 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     const handleScroll = () => setContextMenu(null);
     window.addEventListener('click', handleClick);
     window.addEventListener('scroll', handleScroll, true);
-    window.addEventListener('online', () => setIsOnline(true));
-    window.addEventListener('offline', () => setIsOnline(false));
     return () => {
       window.removeEventListener('click', handleClick);
       window.removeEventListener('scroll', handleScroll, true);
-      window.removeEventListener('online', () => setIsOnline(true));
-      window.removeEventListener('offline', () => setIsOnline(false));
     };
   }, []);
 
   useEffect(() => {
     if (activeRoom) {
-      localStorage.setItem(`messages_${activeRoom.id}`, JSON.stringify(messages.slice(-50)));
-    }
-  }, [messages, activeRoom]);
-
-  useEffect(() => {
-    if (activeRoom) {
-      const cachedMessages = localStorage.getItem(`messages_${activeRoom.id}`);
-      if (cachedMessages) {
-        setMessages(JSON.parse(cachedMessages));
-      }
+      setMessages([]);
+      setMembers([]);
+      setIsAtBottom(true);
+      setHasUnread(false);
       fetchMessages(activeRoom.id);
       fetchMembers(activeRoom.id);
       
@@ -414,27 +324,13 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   }, [activeRoom, profile]);
 
   useEffect(() => {
-    if (scrollToMessageId) {
-      const element = document.getElementById(`message-${scrollToMessageId}`);
-      if (element) {
-        setIsAtBottom(false);
-        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        
-        // Add a temporary highlight class
-        element.classList.add('ring-4', 'ring-amber-400', 'shadow-amber-400/50', 'transition-all', 'duration-1000');
-        setTimeout(() => {
-          element.classList.remove('ring-4', 'ring-amber-400', 'shadow-amber-400/50');
-        }, 2000);
-        
-        setScrollToMessageId(null);
-      }
-    } else if (isAtBottom) {
+    if (isAtBottom) {
       scrollToBottom();
       setHasUnread(false);
     } else if (messages.length > 0) {
       setHasUnread(true);
     }
-  }, [messages, scrollToMessageId, isAtBottom]);
+  }, [messages]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -465,28 +361,6 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [rooms, activeRoom]);
-
-  useEffect(() => {
-    if (isOnline && offlineQueue.length > 0) {
-      processOfflineQueue();
-    }
-  }, [isOnline]);
-
-  const processOfflineQueue = async () => {
-    const remainingQueue = [];
-    for (const payload of offlineQueue) {
-      try {
-        await supabase.from('messages').insert([payload]);
-      } catch (error) {
-        console.error('Error sending queued message:', error);
-        remainingQueue.push(payload);
-      }
-    }
-    setOfflineQueue(remainingQueue);
-    if (offlineQueue.length > remainingQueue.length) {
-      showToast('Queued messages sent', 'success');
-    }
-  };
 
   const scrollToBottom = (force = false) => {
     if (force || isAtBottom) {
@@ -771,28 +645,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
         .eq('room_id', roomId)
         .order('created_at', { ascending: true });
       
-      if (error) {
-        // If reactions table is missing, fallback to fetching without it
-        if (error.message?.includes('reactions') || error.code === '42P01') {
-          console.warn('Reactions table missing, falling back to basic messages fetch');
-          const fallback = await supabase
-            .from('messages')
-            .select(`
-              *,
-              profiles:user_id (*)
-            `)
-            .eq('room_id', roomId)
-            .order('created_at', { ascending: true });
-            
-          if (fallback.error) throw fallback.error;
-          if (fallback.data) {
-            // Add empty reactions array to prevent undefined errors
-            setMessages(fallback.data.map(m => ({ ...m, reactions: [] })));
-          }
-          return;
-        }
-        throw error;
-      }
+      if (error) throw error;
       
       if (data) setMessages(data);
     } catch (error: any) {
@@ -831,12 +684,8 @@ export const ChatDashboard = ({ user }: { user: any }) => {
 
   const handleCreateRoom = async () => {
     if (!newRoomName.trim()) return;
-    if (isCustomCode && !/^[a-zA-Z0-9]{6}$/.test(customRoomCode)) {
-      showToast('Room code must be 6 alphanumeric characters', 'error');
-      return;
-    }
     setLoading(true);
-    const code = isCustomCode ? customRoomCode.toUpperCase() : generateRoomCode();
+    const code = generateRoomCode();
     
     try {
       const { data: room, error: roomError } = await supabase
@@ -845,13 +694,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
         .select()
         .single();
 
-      if (roomError) {
-        if (roomError.code === '23505') {
-          showToast('Room code already in use', 'error');
-        } else {
-          throw roomError;
-        }
-      }
+      if (roomError) throw roomError;
 
       if (room) {
         const { error: memberError } = await supabase
@@ -864,8 +707,6 @@ export const ChatDashboard = ({ user }: { user: any }) => {
         setActiveRoom(room);
         setShowCreateModal(false);
         setNewRoomName('');
-        setCustomRoomCode('');
-        setIsCustomCode(false);
         showToast(`Room "${room.name}" created successfully!`);
       }
     } catch (error: any) {
@@ -964,12 +805,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
       }
     } catch (error: any) {
       console.error('Error toggling reaction:', error);
-      if (error.message?.includes('reactions') || error.code === '42P01') {
-        showToast('Reactions table missing. Please run the SQL fix.', 'error');
-        setShowStorageGuide(true);
-      } else {
-        showToast(error.message || 'Failed to add reaction', 'error');
-      }
+      showToast(error.message || 'Failed to add reaction', 'error');
     } finally {
       setActiveEmojiPicker(null);
     }
@@ -980,63 +816,18 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     showToast('Message copied to clipboard');
   };
 
-  const handleShowOptions = (e: React.MouseEvent, messageId: string) => {
+  const handleContextMenu = (e: React.MouseEvent, messageId: string) => {
     e.preventDefault();
-    e.stopPropagation();
-    const rect = e.currentTarget.getBoundingClientRect();
-    
-    // Calculate center position
-    // We want the menu to be centered over the message bubble
-    const menuWidth = 180;
-    const menuHeight = 220;
-    
-    let x = rect.left + rect.width / 2 - menuWidth / 2;
-    let y = rect.top + rect.height / 2 - menuHeight / 2;
-    
-    // Keep within viewport bounds
-    x = Math.max(10, Math.min(x, window.innerWidth - menuWidth - 10));
-    y = Math.max(10, Math.min(y, window.innerHeight - menuHeight - 10));
-
     setContextMenu({
-      x,
-      y,
+      x: e.clientX,
+      y: e.clientY,
       messageId
     });
   };
 
-  const filteredMessages = messages.filter(m => {
-    // Text search
-    if (searchQuery.trim() && !m.content.toLowerCase().includes(searchQuery.toLowerCase())) {
-      return false;
-    }
-    
-    // Sender search
-    if (searchSender !== 'all' && m.user_id !== searchSender) {
-      return false;
-    }
-    
-    // Pinned search
-    if (searchPinnedOnly && !m.is_pinned && !m.content?.startsWith('[PINNED] ')) {
-      return false;
-    }
-    
-    // Date range search
-    if (searchDateRange !== 'all') {
-      const msgDate = new Date(m.created_at);
-      const now = new Date();
-      if (searchDateRange === 'today') {
-        if (msgDate.toDateString() !== now.toDateString()) return false;
-      } else if (searchDateRange === 'week') {
-        const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-        if (msgDate < weekAgo) return false;
-      } else if (searchDateRange === 'month') {
-        const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-        if (msgDate < monthAgo) return false;
-      }
-    }
-    
-    return true;
-  });
+  const filteredMessages = searchQuery.trim() 
+    ? messages.filter(m => m.content.toLowerCase().includes(searchQuery.toLowerCase()))
+    : messages;
 
   const handleLogout = () => supabase.auth.signOut();
 
@@ -1150,47 +941,19 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   };
 
   const handleTogglePin = async (message: Message) => {
-    if (!activeRoom) return;
-    
-    if (activeRoom.created_by !== user?.id) {
-      showToast('Only the room creator can pin messages', 'error');
-      return;
-    }
+    if (!activeRoom || activeRoom.created_by !== user?.id) return;
 
     try {
-      const newPinnedStatus = !message.is_pinned;
-      
-      // Try updating the is_pinned column
       const { error } = await supabase
         .from('messages')
-        .update({ is_pinned: newPinnedStatus })
+        .update({ is_pinned: !message.is_pinned })
         .eq('id', message.id);
 
-      if (error) {
-        // If column is missing or any other error, we'll try a fallback by prefixing content
-        // This is a last resort fix for missing database columns
-        console.warn('is_pinned column missing or error, falling back to content prefix');
-        const content = message.content || '';
-        const isAlreadyPinned = content.startsWith('[PINNED] ');
-        const newContent = newPinnedStatus 
-          ? (isAlreadyPinned ? content : `[PINNED] ${content}`)
-          : (isAlreadyPinned ? content.replace('[PINNED] ', '') : content);
-          
-        const { error: fallbackError } = await supabase
-          .from('messages')
-          .update({ content: newContent })
-          .eq('id', message.id);
-          
-        if (fallbackError) throw fallbackError;
-        showToast(newPinnedStatus ? 'Message pinned (fallback)' : 'Message unpinned (fallback)');
-      } else {
-        showToast(newPinnedStatus ? 'Message pinned' : 'Message unpinned');
-      }
-      
+      if (error) throw error;
       setContextMenu(null);
     } catch (error: any) {
       console.error('Error toggling pin:', error);
-      showToast('Failed to toggle pin: ' + (error.message || 'Unknown error'), 'error');
+      showToast('Failed to toggle pin', 'error');
     }
   };
 
@@ -1198,12 +961,6 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     if (!activeRoom || !user) return;
 
     try {
-      // Try to create the bucket automatically (might fail if no permissions, but worth trying)
-      const { data: buckets } = await supabase.storage.listBuckets();
-      if (buckets && !buckets.some(b => b.name === 'avatars')) {
-        await supabase.storage.createBucket('avatars', { public: true });
-      }
-
       const fileExt = file.name.split('.').pop();
       const fileName = `${user.id}/${Date.now()}.${fileExt}`;
       const filePath = `chat_images/${fileName}`;
@@ -1212,24 +969,16 @@ export const ChatDashboard = ({ user }: { user: any }) => {
         .from('avatars') // Reusing avatars bucket for simplicity
         .upload(filePath, file);
 
-      if (uploadError) {
-        if (uploadError.message.toLowerCase().includes('bucket not found')) {
-          showToast('Storage bucket "avatars" is missing. Please create a public bucket named "avatars" in your Supabase project.', 'error');
-          setShowStorageGuide(true);
-          throw new Error('Bucket "avatars" not found.');
-        }
-        throw uploadError;
-      }
+      if (uploadError) throw uploadError;
 
       const { data: { publicUrl } } = supabase.storage
         .from('avatars')
         .getPublicUrl(filePath);
 
       await handleSendMessage('', undefined, publicUrl);
-      showToast('Image uploaded successfully');
     } catch (error: any) {
       console.error('Error uploading image:', error);
-      showToast('Failed to upload image: ' + (error.message || 'Unknown error'), 'error');
+      showToast('Failed to upload image', 'error');
     }
   };
 
@@ -1243,84 +992,19 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     try {
       const url = extractUrl(textContent);
       
-      // Prepare payload
-      const payload: any = { 
-        room_id: activeRoom.id, 
-        user_id: user.id, 
-        content: textContent
-      };
-      
-      if (audioUrl) {
-        payload.audio_url = audioUrl;
-      }
-      
-      // Only add image_url if provided
-      if (imageUrl) {
-        payload.image_url = imageUrl;
-      }
-
-      if (replyingTo) {
-        payload.reply_to_id = replyingTo.id;
-      }
-      
-      if (!isOnline) {
-        setOfflineQueue(prev => [...prev, payload]);
-        showToast('Message queued for when you are back online', 'success');
-        return;
-      }
-
-      let { data, error } = await supabase
+      const { data, error } = await supabase
         .from('messages')
-        .insert([payload])
+        .insert([{ 
+          room_id: activeRoom.id, 
+          user_id: user.id, 
+          content: textContent,
+          audio_url: audioUrl,
+          image_url: imageUrl
+        }])
         .select()
         .single();
 
-      // Fallback if image_url or reply_to_id column is missing
-      if (error) {
-        console.warn('Column missing or error, falling back to basic payload', error);
-        const fallbackPayload: any = {
-          room_id: activeRoom.id,
-          user_id: user.id,
-          content: imageUrl ? `[IMAGE]${imageUrl}${textContent ? ' ' + textContent : ''}` : textContent,
-          audio_url: audioUrl
-        };
-        
-        // If the error was specifically about reply_to_id, we just omit it
-        // Otherwise we can try to include it
-        if (!error.message?.includes('reply_to_id') && replyingTo) {
-          fallbackPayload.reply_to_id = replyingTo.id;
-        }
-
-        const { data: fallbackData, error: fallbackError } = await supabase
-          .from('messages')
-          .insert([fallbackPayload])
-          .select()
-          .single();
-        
-        // If it still fails, try without reply_to_id as a last resort
-        if (fallbackError && fallbackError.message?.includes('reply_to_id')) {
-          delete fallbackPayload.reply_to_id;
-          if (replyingTo) {
-            fallbackPayload.content = `[REPLY:${replyingTo.id}]${fallbackPayload.content}`;
-          }
-          const { data: finalData, error: finalError } = await supabase
-            .from('messages')
-            .insert([fallbackPayload])
-            .select()
-            .single();
-            
-          if (finalError) throw finalError;
-          data = finalData;
-          error = null;
-        } else if (fallbackError) {
-          throw fallbackError;
-        } else {
-          data = fallbackData;
-          error = null;
-        }
-      }
-
-      setReplyingTo(null);
+      if (error) throw error;
 
       scrollToBottom(true);
 
@@ -1369,7 +1053,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
       {/* Storage Troubleshooting Modal */}
       <AnimatePresence>
         {showStorageGuide && (
-          <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
             <motion.div 
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
@@ -1378,8 +1062,8 @@ export const ChatDashboard = ({ user }: { user: any }) => {
             >
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-xl font-bold text-white flex items-center gap-2">
-                  <Upload className="w-5 h-5 text-indigo-400" />
-                  Fix Storage Issues
+                  <Volume2 className="w-5 h-5 text-indigo-400" />
+                  Fix Voice Messages
                 </h3>
                 <button 
                   onClick={() => setShowStorageGuide(false)}
@@ -1390,53 +1074,23 @@ export const ChatDashboard = ({ user }: { user: any }) => {
               </div>
               
               <div className="space-y-4 text-slate-300 text-sm">
-                <p>To enable images and voice messages, you need to create storage buckets in your Supabase project:</p>
+                <p>To enable voice messages, you need to create a storage bucket in your Supabase project:</p>
                 
                 <div className="bg-slate-950 p-3 rounded-lg border border-slate-800 font-mono text-xs overflow-x-auto">
                   <p className="text-indigo-400"># Step 1</p>
                   <p>Go to Supabase Dashboard &gt; Storage</p>
                   <p className="text-indigo-400 mt-2"># Step 2</p>
-                  <p>Create buckets named: <span className="text-white">avatars</span> and <span className="text-white">voice-messages</span></p>
+                  <p>Create bucket named: <span className="text-white">voice-messages</span></p>
                   <p className="text-indigo-400 mt-2"># Step 3</p>
-                  <p>Set both buckets to <span className="text-white">PUBLIC</span></p>
-                </div>
-
-                <div className="bg-amber-500/10 border border-amber-500/20 p-3 rounded-lg text-amber-200 text-xs mt-4">
-                  <p><strong>Note:</strong> If you see "image_url column missing" errors, the app is using a fallback. To fix it properly, add an <code>image_url</code> (text) and <code>is_pinned</code> (boolean) column to your <code>messages</code> table. Also, you need a <code>reactions</code> table for emoji reactions.</p>
+                  <p>Set bucket to <span className="text-white">PUBLIC</span></p>
                 </div>
 
                 <button
                   onClick={() => {
-                    copyToClipboard(`
--- Create buckets
-INSERT INTO storage.buckets (id, name, public) VALUES ('avatars', 'avatars', true);
-INSERT INTO storage.buckets (id, name, public) VALUES ('voice-messages', 'voice-messages', true);
-
--- Add missing columns to messages table
-ALTER TABLE messages ADD COLUMN IF NOT EXISTS image_url TEXT;
-ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_pinned BOOLEAN DEFAULT FALSE;
-
--- Create reactions table
-CREATE TABLE IF NOT EXISTS reactions (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  message_id UUID REFERENCES messages(id) ON DELETE CASCADE,
-  user_id UUID REFERENCES profiles(id) ON DELETE CASCADE,
-  emoji TEXT NOT NULL,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
-  UNIQUE(message_id, user_id, emoji)
-);
-
--- Enable RLS for reactions
-ALTER TABLE reactions ENABLE ROW LEVEL SECURITY;
-
--- Create policies for reactions
-CREATE POLICY "Reactions are viewable by everyone" ON reactions FOR SELECT USING (true);
-CREATE POLICY "Users can insert their own reactions" ON reactions FOR INSERT WITH CHECK (auth.uid() = user_id);
-CREATE POLICY "Users can delete their own reactions" ON reactions FOR DELETE USING (auth.uid() = user_id);
-                    `);
+                    copyToClipboard(`INSERT INTO storage.buckets (id, name, public) VALUES ('voice-messages', 'voice-messages', true);`);
                     showToast('SQL copied! Run this in Supabase SQL Editor.');
                   }}
-                  className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition-colors flex items-center justify-center gap-2 mt-4"
+                  className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition-colors flex items-center justify-center gap-2"
                 >
                   Copy SQL Fix
                 </button>
@@ -1809,12 +1463,7 @@ CREATE POLICY "Users can delete their own reactions" ON reactions FOR DELETE USI
                 size="icon" 
                 onClick={() => {
                   setShowSearch(!showSearch);
-                  if (showSearch) {
-                    setSearchQuery('');
-                    setSearchSender('all');
-                    setSearchDateRange('all');
-                    setSearchPinnedOnly(false);
-                  }
+                  if (showSearch) setSearchQuery('');
                 }}
                 className={cn(
                   "text-slate-400",
@@ -1860,12 +1509,7 @@ CREATE POLICY "Users can delete their own reactions" ON reactions FOR DELETE USI
                         <button
                           onClick={() => {
                             setShowSearch(!showSearch);
-                            if (showSearch) {
-                              setSearchQuery('');
-                              setSearchSender('all');
-                              setSearchDateRange('all');
-                              setSearchPinnedOnly(false);
-                            }
+                            if (showSearch) setSearchQuery('');
                             setShowMobileRoomMenu(false);
                           }}
                           className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-slate-300 hover:bg-slate-800 transition-colors"
@@ -2002,12 +1646,7 @@ CREATE POLICY "Users can delete their own reactions" ON reactions FOR DELETE USI
                   size="icon" 
                   onClick={() => {
                     setShowSearch(!showSearch);
-                    if (showSearch) {
-                      setSearchQuery('');
-                      setSearchSender('all');
-                      setSearchDateRange('all');
-                      setSearchPinnedOnly(false);
-                    }
+                    if (showSearch) setSearchQuery('');
                   }}
                   className={cn(
                     showSearch ? 'text-indigo-400 bg-indigo-500/10' : ''
@@ -2043,58 +1682,6 @@ CREATE POLICY "Users can delete their own reactions" ON reactions FOR DELETE USI
               </div>
             </header>
 
-            {/* Advanced Search Filters Panel */}
-            <AnimatePresence>
-              {showSearch && (
-                <motion.div
-                  initial={{ height: 0, opacity: 0 }}
-                  animate={{ height: 'auto', opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }}
-                  className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-white/5 px-4 py-3 z-10"
-                >
-                  <div className="flex flex-wrap gap-4 items-center text-sm">
-                    <div className="flex items-center gap-2">
-                      <span className="text-slate-500 dark:text-slate-400 font-medium">From:</span>
-                      <select 
-                        value={searchSender}
-                        onChange={(e) => setSearchSender(e.target.value)}
-                        className="bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-white/10 rounded-lg px-2 py-1 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                      >
-                        <option value="all">Anyone</option>
-                        {members.map(m => (
-                          <option key={m.id} value={m.id}>{m.username}</option>
-                        ))}
-                      </select>
-                    </div>
-                    
-                    <div className="flex items-center gap-2">
-                      <span className="text-slate-500 dark:text-slate-400 font-medium">Date:</span>
-                      <select 
-                        value={searchDateRange}
-                        onChange={(e) => setSearchDateRange(e.target.value as any)}
-                        className="bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-white/10 rounded-lg px-2 py-1 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                      >
-                        <option value="all">Any time</option>
-                        <option value="today">Today</option>
-                        <option value="week">Past 7 days</option>
-                        <option value="month">Past 30 days</option>
-                      </select>
-                    </div>
-
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input 
-                        type="checkbox" 
-                        checked={searchPinnedOnly}
-                        onChange={(e) => setSearchPinnedOnly(e.target.checked)}
-                        className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 bg-slate-50 dark:bg-slate-800 dark:border-white/10"
-                      />
-                      <span className="text-slate-500 dark:text-slate-400 font-medium">Pinned only</span>
-                    </label>
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-
             {/* Messages */}
             <div 
               ref={messagesContainerRef}
@@ -2126,7 +1713,7 @@ CREATE POLICY "Users can delete their own reactions" ON reactions FOR DELETE USI
                             <span className="text-[9px] text-slate-600">{format(new Date(pinned.created_at), 'MMM d, HH:mm')}</span>
                           </div>
                           <p className="text-xs text-slate-300 line-clamp-2 leading-relaxed">
-                            {pinned.content?.startsWith('[PINNED] ') ? pinned.content.replace('[PINNED] ', '') : (pinned.content || (pinned.image_url || pinned.content?.includes('[IMAGE]') ? '📷 Shared an image' : '🎤 Voice message'))}
+                            {pinned.content || (pinned.image_url ? '📷 Shared an image' : '🎤 Voice message')}
                           </p>
                         </div>
                         {activeRoom.created_by === user.id && (
@@ -2145,22 +1732,16 @@ CREATE POLICY "Users can delete their own reactions" ON reactions FOR DELETE USI
                 </div>
               )}
 
-              {(searchQuery || searchSender !== 'all' || searchDateRange !== 'all' || searchPinnedOnly) && (
+              {searchQuery && (
                 <div className="flex items-center justify-between bg-indigo-500/5 border border-indigo-500/10 px-4 py-2 rounded-xl mb-4">
                   <p className="text-xs text-indigo-400 font-medium">
-                    Found {filteredMessages.length} result{filteredMessages.length !== 1 ? 's' : ''}
-                    {searchQuery ? ` for "${searchQuery}"` : ' matching filters'}
+                    Found {filteredMessages.length} results for "{searchQuery}"
                   </p>
                   <button 
-                    onClick={() => {
-                      setSearchQuery('');
-                      setSearchSender('all');
-                      setSearchDateRange('all');
-                      setSearchPinnedOnly(false);
-                    }}
+                    onClick={() => setSearchQuery('')}
                     className="text-[10px] font-bold uppercase tracking-wider text-indigo-400 hover:text-indigo-300"
                   >
-                    Clear All
+                    Clear
                   </button>
                 </div>
               )}
@@ -2175,57 +1756,40 @@ CREATE POLICY "Users can delete their own reactions" ON reactions FOR DELETE USI
                   return (
                     <motion.div
                       key={msg.id}
-                      id={`message-${msg.id}`}
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
                       className={cn(
-                        "group relative",
+                        "flex gap-3 group relative",
+                        isMe ? "flex-row-reverse" : "flex-row",
                         shouldGroup ? "mt-0.5" : "mt-6"
                       )}
                     >
-                      <SwipeableMessageRow
-                        msg={msg}
-                        isMe={isMe}
-                        onReply={() => setReplyingTo(msg)}
-                        onDelete={() => setMessageToDeleteId(msg.id)}
-                      >
-                        <div className={cn(
-                          "flex gap-3",
-                          isMe ? "flex-row-reverse" : "flex-row"
-                        )}>
-                          {/* Avatar */}
-                          <div className={cn(
-                            "w-8 h-8 rounded-lg flex-shrink-0 flex items-center justify-center text-xs font-bold border overflow-hidden transition-opacity",
-                            isMe 
-                              ? "bg-indigo-500/20 border-indigo-500/30 text-indigo-600 dark:text-indigo-400" 
-                              : "bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400",
-                            shouldGroup ? "opacity-0" : "opacity-100"
-                          )}>
-                            {msg.profiles?.avatar_url ? (
-                              <img src={msg.profiles.avatar_url} alt="Avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                            ) : (
-                              msg.profiles?.username?.[0]?.toUpperCase() || '?'
-                            )}
-                          </div>
+                      {/* Avatar */}
+                      <div className={cn(
+                        "w-8 h-8 rounded-lg flex-shrink-0 flex items-center justify-center text-xs font-bold border overflow-hidden transition-opacity",
+                        isMe 
+                          ? "bg-indigo-500/20 border-indigo-500/30 text-indigo-600 dark:text-indigo-400" 
+                          : "bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400",
+                        shouldGroup ? "opacity-0" : "opacity-100"
+                      )}>
+                        {msg.profiles?.avatar_url ? (
+                          <img src={msg.profiles.avatar_url} alt="Avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                        ) : (
+                          msg.profiles?.username?.[0]?.toUpperCase() || '?'
+                        )}
+                      </div>
 
-                          {/* Message Content */}
-                          <div className={cn(
-                            "flex flex-col max-w-[80%]",
-                            isMe ? "items-end" : "items-start"
-                          )}>
+                      {/* Message Content */}
+                      <div className={cn(
+                        "flex flex-col max-w-[80%]",
+                        isMe ? "items-end" : "items-start"
+                      )}>
                         {/* Header: Name & Time - Only show if not grouped */}
                         {!shouldGroup && (
                           <div className={cn(
                             "flex items-center gap-2 mb-1 px-1",
                             isMe ? "flex-row-reverse" : "flex-row"
                           )}>
-                            <div className="w-5 h-5 rounded-md bg-slate-200 dark:bg-slate-800 flex items-center justify-center text-[10px] font-bold overflow-hidden border border-slate-300 dark:border-slate-700">
-                              {msg.profiles?.avatar_url ? (
-                                <img src={msg.profiles.avatar_url} alt="Avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                              ) : (
-                                msg.profiles?.username?.[0]?.toUpperCase() || '?'
-                              )}
-                            </div>
                             <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
                               {isMe ? 'You' : (msg.profiles?.username || 'Unknown')}
                             </span>
@@ -2238,23 +1802,10 @@ CREATE POLICY "Users can delete their own reactions" ON reactions FOR DELETE USI
                         {/* Bubble */}
                         <div 
                           className="relative group/bubble"
-                          onContextMenu={(e) => handleShowOptions(e, msg.id)}
-                          onClick={(e) => handleShowOptions(e, msg.id)}
+                          onContextMenu={(e) => handleContextMenu(e, msg.id)}
                         >
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleShowOptions(e, msg.id);
-                            }}
-                            className={cn(
-                              "absolute top-1/2 -translate-y-1/2 opacity-0 group-hover/bubble:opacity-100 transition-opacity p-1.5 bg-white dark:bg-slate-800 rounded-full shadow-sm border border-slate-200 dark:border-slate-700 text-slate-500 hover:text-indigo-500 z-10",
-                              isMe ? "-left-10" : "-right-10"
-                            )}
-                          >
-                            <SmilePlus className="w-4 h-4" />
-                          </button>
                           <div className={cn(
-                            "px-4 py-2.5 rounded-2xl text-sm leading-relaxed shadow-lg transition-all cursor-pointer",
+                            "px-4 py-2.5 rounded-2xl text-sm leading-relaxed shadow-lg transition-all",
                             isMe 
                               ? cn(
                                   "bg-indigo-600 text-white",
@@ -2263,181 +1814,152 @@ CREATE POLICY "Users can delete their own reactions" ON reactions FOR DELETE USI
                               : cn(
                                   "bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700/50",
                                   shouldGroup ? "rounded-tl-2xl" : "rounded-tl-none"
-                                ),
-                            (searchQuery || searchSender !== 'all' || searchDateRange !== 'all' || searchPinnedOnly) && "ring-2 ring-indigo-500/50 shadow-indigo-500/20"
+                                )
                           )}>
-                            {(() => {
-                              const isPinnedFallback = msg.content?.startsWith('[PINNED] ');
-                              let displayContent = isPinnedFallback ? msg.content.replace('[PINNED] ', '') : msg.content;
-                              
-                              const isReplyFallback = displayContent?.startsWith('[REPLY:');
-                              const replyIdFallback = isReplyFallback ? displayContent.match(/\[REPLY:([^\]]+)\]/)?.[1] : null;
-                              displayContent = isReplyFallback ? displayContent.replace(/\[REPLY:[^\]]+\]/, '') : displayContent;
-                              
-                              const isImageFallback = displayContent?.startsWith('[IMAGE]');
-                              const imageUrlFallback = isImageFallback ? displayContent.match(/\[IMAGE\](https?:\/\/[^\s]+)/)?.[1] : null;
-                              const textAfterImage = isImageFallback ? displayContent.replace(/\[IMAGE\]https?:\/\/[^\s]+/, '').trim() : displayContent;
-
-                              const repliedMessageId = msg.reply_to_id || replyIdFallback;
-                              const repliedMessage = repliedMessageId ? messages.find(m => m.id === repliedMessageId) : null;
-
-                              const renderReplyBanner = () => {
-                                if (!repliedMessage) return null;
-                                return (
-                                  <div 
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setScrollToMessageId(repliedMessage.id);
-                                    }}
-                                    className={cn(
-                                      "mb-2 px-3 py-2 rounded-lg text-xs cursor-pointer transition-colors border-l-2",
-                                      isMe 
-                                        ? "bg-indigo-700/30 hover:bg-indigo-700/50 border-indigo-400 text-indigo-100" 
-                                        : "bg-slate-200/50 dark:bg-slate-700/50 hover:bg-slate-200 dark:hover:bg-slate-700 border-indigo-500 text-slate-600 dark:text-slate-300"
-                                    )}
-                                  >
-                                    <div className="font-bold mb-0.5 flex items-center gap-1">
-                                      <Reply className="w-3 h-3" />
-                                      {repliedMessage.profiles?.username || 'Unknown'}
-                                    </div>
-                                    <div className="truncate opacity-80">
-                                      {repliedMessage.content || (repliedMessage.image_url ? 'Image' : 'Voice Message')}
-                                    </div>
+                            {msg.audio_url ? (
+                              <div className="flex items-center gap-3 min-w-[200px] py-1">
+                                <button
+                                  onClick={() => toggleAudio(msg.id, msg.audio_url!)}
+                                  className={cn(
+                                    "w-10 h-10 rounded-full flex items-center justify-center transition-all",
+                                    isMe ? "bg-white/20 hover:bg-white/30" : "bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-400"
+                                  )}
+                                >
+                                  {playingAudioId === msg.id ? (
+                                    <Pause className="w-5 h-5 fill-current" />
+                                  ) : (
+                                    <Play className="w-5 h-5 fill-current ml-0.5" />
+                                  )}
+                                </button>
+                                <div className="flex-1 space-y-1">
+                                  <div className="flex items-center justify-between text-[10px] opacity-70 font-mono uppercase tracking-widest">
+                                    <span>Voice Message</span>
+                                    <Volume2 className="w-3 h-3" />
                                   </div>
-                                );
-                              };
-
-                              if (msg.audio_url) {
-                                return (
-                                  <div className="flex flex-col">
-                                    {renderReplyBanner()}
-                                    <div className="flex items-center gap-3 min-w-[200px] py-1">
-                                      <button
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        toggleAudio(msg.id, msg.audio_url!);
-                                      }}
-                                      className={cn(
-                                        "w-10 h-10 rounded-full flex items-center justify-center transition-all",
-                                        isMe ? "bg-white/20 hover:bg-white/30" : "bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-400"
-                                      )}
-                                    >
-                                      {playingAudioId === msg.id ? (
-                                        <Pause className="w-5 h-5 fill-current" />
-                                      ) : (
-                                        <Play className="w-5 h-5 fill-current ml-0.5" />
-                                      )}
-                                    </button>
-                                    <div className="flex-1 space-y-1">
-                                      <div className="flex items-center justify-between text-[10px] opacity-70 font-mono uppercase tracking-widest">
-                                        <span>Voice Message</span>
-                                        <Volume2 className="w-3 h-3" />
-                                      </div>
-                                      <div className="h-1 bg-white/10 rounded-full overflow-hidden">
-                                        <motion.div 
-                                          className={cn("h-full", isMe ? "bg-white/40" : "bg-indigo-500/40")}
-                                          animate={{ width: playingAudioId === msg.id ? '100%' : '0%' }}
-                                          transition={{ duration: 5, ease: "linear" }}
-                                        />
-                                      </div>
-                                    </div>
-                                  </div>
-                                  </div>
-                                );
-                              }
-
-                              if (editingMessageId === msg.id) {
-                                return (
-                                  <div className="flex flex-col gap-2 min-w-[200px]" onClick={e => e.stopPropagation()}>
-                                    {renderReplyBanner()}
-                                    <textarea
-                                      value={editMessageContent}
-                                      onChange={(e) => setEditMessageContent(e.target.value)}
-                                      className="w-full bg-slate-900/50 border border-white/10 rounded-lg p-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-indigo-500/50 resize-none min-h-[60px]"
-                                      autoFocus
+                                  <div className="h-1 bg-white/10 rounded-full overflow-hidden">
+                                    <motion.div 
+                                      className={cn("h-full", isMe ? "bg-white/40" : "bg-indigo-500/40")}
+                                      animate={{ width: playingAudioId === msg.id ? '100%' : '0%' }}
+                                      transition={{ duration: 5, ease: "linear" }}
                                     />
-                                    <div className="flex justify-end gap-2">
-                                      <button 
-                                        onClick={() => setEditingMessageId(null)}
-                                        className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 hover:text-slate-200"
-                                      >
-                                        Cancel
-                                      </button>
-                                      <button 
-                                        onClick={() => handleEditMessage(msg.id)}
-                                        className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider bg-indigo-500 text-white rounded-md hover:bg-indigo-400"
-                                      >
-                                        Save
-                                      </button>
-                                    </div>
                                   </div>
-                                );
-                              }
-
-                              return (
-                                <div className="space-y-2">
-                                  {renderReplyBanner()}
-                                  {(msg.is_pinned || isPinnedFallback) && (
-                                    <div className="flex items-center gap-1.5 mb-1 opacity-70">
-                                      <Pin className="w-3 h-3 text-amber-400 fill-amber-400" />
-                                      <span className="text-[10px] font-bold uppercase tracking-widest text-amber-400">Pinned</span>
-                                    </div>
-                                  )}
-                                  {(msg.image_url || imageUrlFallback) && (
-                                    <div className="rounded-xl overflow-hidden mb-1 border border-white/10">
-                                      <img 
-                                        src={msg.image_url || imageUrlFallback!} 
-                                        alt="Shared" 
-                                        className="max-w-full max-h-[300px] object-contain cursor-pointer hover:scale-[1.02] transition-transform"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          window.open(msg.image_url || imageUrlFallback!, '_blank');
-                                        }}
-                                        referrerPolicy="no-referrer"
-                                      />
-                                    </div>
-                                  )}
-                                  {textAfterImage && (
-                                    <div className={cn(
-                                      "markdown-body prose prose-sm max-w-none break-words",
-                                      isMe ? "prose-invert" : "dark:prose-invert"
-                                    )}>
-                                      <ReactMarkdown>{textAfterImage}</ReactMarkdown>
-                                    </div>
-                                  )}
-                                  {msg.updated_at && (
-                                    <span className="text-[9px] opacity-50 italic">(edited)</span>
-                                  )}
-                                  {msg.link_preview && (
-                                    <div onClick={e => e.stopPropagation()}>
-                                      <LinkPreview preview={msg.link_preview} />
-                                    </div>
-                                  )}
-                                  {(searchQuery || searchSender !== 'all' || searchDateRange !== 'all' || searchPinnedOnly) && (
-                                    <div className="mt-2 flex justify-end">
-                                      <button
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setSearchQuery('');
-                                          setSearchSender('all');
-                                          setSearchDateRange('all');
-                                          setSearchPinnedOnly(false);
-                                          setScrollToMessageId(msg.id);
-                                        }}
-                                        className={cn(
-                                          "text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-md transition-colors",
-                                          isMe 
-                                            ? "bg-indigo-500/30 hover:bg-indigo-500/50 text-white" 
-                                            : "bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-slate-600 dark:text-slate-300"
-                                        )}
-                                      >
-                                        Jump to message
-                                      </button>
-                                    </div>
-                                  )}
                                 </div>
-                              );
-                            })()}
+                              </div>
+                            ) : editingMessageId === msg.id ? (
+                              <div className="flex flex-col gap-2 min-w-[200px]">
+                                <textarea
+                                  value={editMessageContent}
+                                  onChange={(e) => setEditMessageContent(e.target.value)}
+                                  className="w-full bg-slate-900/50 border border-white/10 rounded-lg p-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-indigo-500/50 resize-none min-h-[60px]"
+                                  autoFocus
+                                />
+                                <div className="flex justify-end gap-2">
+                                  <button 
+                                    onClick={() => setEditingMessageId(null)}
+                                    className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 hover:text-slate-200"
+                                  >
+                                    Cancel
+                                  </button>
+                                  <button 
+                                    onClick={() => handleEditMessage(msg.id)}
+                                    className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider bg-indigo-500 text-white rounded-md hover:bg-indigo-400"
+                                  >
+                                    Save
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="flex flex-col gap-2">
+                                {msg.is_pinned && (
+                                  <div className="flex items-center gap-1.5 mb-1 opacity-70">
+                                    <Pin className="w-3 h-3 text-amber-400 fill-amber-400" />
+                                    <span className="text-[10px] font-bold uppercase tracking-widest text-amber-400">Pinned</span>
+                                  </div>
+                                )}
+                                {msg.image_url && (
+                                  <div className="rounded-xl overflow-hidden mb-1 border border-white/10">
+                                    <img 
+                                      src={msg.image_url} 
+                                      alt="Shared image" 
+                                      className="max-w-full max-h-[300px] object-contain cursor-pointer hover:scale-[1.02] transition-transform"
+                                      onClick={() => window.open(msg.image_url, '_blank')}
+                                      referrerPolicy="no-referrer"
+                                    />
+                                  </div>
+                                )}
+                                {msg.content && (
+                                  <div className="markdown-body prose prose-slate dark:prose-invert prose-sm max-w-none">
+                                    <ReactMarkdown>{msg.content}</ReactMarkdown>
+                                  </div>
+                                )}
+                                {msg.updated_at && (
+                                  <span className="text-[9px] opacity-50 italic">(edited)</span>
+                                )}
+                                {msg.link_preview && (
+                                  <LinkPreview preview={msg.link_preview} />
+                                )}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Message Actions Trigger */}
+                          <div className={cn(
+                            "absolute top-0 opacity-0 group-hover/bubble:opacity-100 transition-opacity z-10 flex gap-1",
+                            isMe ? "right-full mr-2" : "left-full ml-2"
+                          )}>
+                            <button
+                              onClick={() => setActiveEmojiPicker(activeEmojiPicker === msg.id ? null : msg.id)}
+                              className="p-1.5 text-slate-500 hover:text-indigo-400 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition-colors bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm border border-slate-200 dark:border-slate-800"
+                            >
+                              <Smile className="w-4 h-4" />
+                            </button>
+                            
+                            {isMe && !msg.audio_url && (new Date().getTime() - new Date(msg.created_at).getTime()) < 15 * 60 * 1000 && (
+                              <button
+                                onClick={() => {
+                                  setEditingMessageId(msg.id);
+                                  setEditMessageContent(msg.content);
+                                }}
+                                className="p-1.5 text-slate-500 hover:text-indigo-400 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition-colors bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm border border-slate-200 dark:border-slate-800"
+                                title="Edit Message"
+                              >
+                                <Pencil className="w-4 h-4" />
+                              </button>
+                            )}
+
+                            {isMe && (
+                              <button
+                                onClick={() => setMessageToDeleteId(msg.id)}
+                                className="p-1.5 text-slate-500 hover:text-red-400 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition-colors bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm border border-slate-200 dark:border-slate-800"
+                                title="Delete Message"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            )}
+                            
+                            <AnimatePresence>
+                              {activeEmojiPicker === msg.id && (
+                                <motion.div
+                                  initial={{ opacity: 0, scale: 0.9, y: 10 }}
+                                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                                  exit={{ opacity: 0, scale: 0.9, y: 10 }}
+                                  className={cn(
+                                    "absolute bottom-full mb-2 p-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-2xl z-50 flex gap-1",
+                                    isMe ? "right-0" : "left-0"
+                                  )}
+                                >
+                                  {COMMON_EMOJIS.map(emoji => (
+                                    <button
+                                      key={emoji}
+                                      onClick={() => handleToggleReaction(msg.id, emoji)}
+                                      className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors text-lg"
+                                    >
+                                      {emoji}
+                                    </button>
+                                  ))}
+                                </motion.div>
+                              )}
+                            </AnimatePresence>
                           </div>
                         </div>
                         
@@ -2458,7 +1980,6 @@ CREATE POLICY "Users can delete their own reactions" ON reactions FOR DELETE USI
                                 <button
                                   key={emoji}
                                   onClick={() => handleToggleReaction(msg.id, emoji)}
-                                  aria-label={`React with ${emoji}`}
                                   className={cn(
                                     "flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold transition-all border",
                                     hasReacted 
@@ -2474,8 +1995,6 @@ CREATE POLICY "Users can delete their own reactions" ON reactions FOR DELETE USI
                           </div>
                         )}
                       </div>
-                        </div>
-                      </SwipeableMessageRow>
                     </motion.div>
                   );
                 })}
@@ -2490,7 +2009,6 @@ CREATE POLICY "Users can delete their own reactions" ON reactions FOR DELETE USI
                   >
                     <button
                       onClick={() => scrollToBottom(true)}
-                      aria-label="Scroll to new messages"
                       className="bg-indigo-600 text-white px-5 py-2.5 rounded-full shadow-2xl shadow-indigo-500/40 text-xs font-bold flex items-center gap-2 hover:bg-indigo-500 transition-all border border-indigo-400/30 backdrop-blur-sm"
                     >
                       <ChevronRight className="w-4 h-4 rotate-90" />
@@ -2564,36 +2082,6 @@ CREATE POLICY "Users can delete their own reactions" ON reactions FOR DELETE USI
                   )}
                 </AnimatePresence>
 
-                <AnimatePresence>
-                  {replyingTo && (
-                    <motion.div
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: 10 }}
-                      className="absolute -top-14 left-4 right-4 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-t-xl px-4 py-2 flex items-center justify-between z-0 shadow-lg"
-                    >
-                      <div className="flex flex-col overflow-hidden">
-                        <div className="flex items-center gap-2">
-                          <Reply className="w-3 h-3 text-indigo-500" />
-                          <span className="text-[10px] font-bold text-indigo-500 uppercase tracking-wider">
-                            Replying to {replyingTo.profiles?.username || 'Unknown'}
-                          </span>
-                        </div>
-                        <span className="text-xs text-slate-500 dark:text-slate-400 truncate max-w-md">
-                          {replyingTo.content || (replyingTo.image_url ? 'Image' : 'Voice Message')}
-                        </span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setReplyingTo(null)}
-                        className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors"
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-
                 <form 
                   onSubmit={(e) => {
                     e.preventDefault();
@@ -2606,7 +2094,7 @@ CREATE POLICY "Users can delete their own reactions" ON reactions FOR DELETE USI
                       <button 
                         type="button"
                         onClick={() => imageInputRef.current?.click()}
-                        className="p-2.5 text-slate-500 hover:text-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded-xl transition-all"
+                        className="p-2 text-slate-500 hover:text-indigo-400 transition-all"
                         title="Upload Image"
                       >
                         <ImageIcon className="w-5 h-5" />
@@ -2631,14 +2119,13 @@ CREATE POLICY "Users can delete their own reactions" ON reactions FOR DELETE USI
                       }}
                       placeholder={`Message #${activeRoom.name}`}
                       disabled={isRecording}
-                      className="w-full bg-slate-100 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl pl-14 pr-24 py-4 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all placeholder:text-slate-400 dark:placeholder:text-slate-600 shadow-sm disabled:opacity-50"
+                      className="w-full bg-slate-100 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl pl-24 pr-12 py-4 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all placeholder:text-slate-400 dark:placeholder:text-slate-600 shadow-2xl disabled:opacity-50"
                     />
                     <button 
                       type="button"
                       onClick={startRecording}
                       disabled={isUploadingVoice}
-                      className="absolute right-16 top-1/2 -translate-y-1/2 p-2.5 text-slate-500 hover:text-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded-xl transition-all"
-                      title="Record Voice"
+                      className="absolute right-3 top-1/2 -translate-y-1/2 p-2 text-slate-500 hover:text-indigo-400 transition-all"
                     >
                       <Mic className="w-5 h-5" />
                     </button>
@@ -2753,26 +2240,7 @@ CREATE POLICY "Users can delete their own reactions" ON reactions FOR DELETE USI
                 onChange={(e) => setNewRoomName(e.target.value)}
                 autoFocus
               />
-              <div className="space-y-2">
-                <label className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
-                  <input 
-                    type="checkbox" 
-                    checked={isCustomCode} 
-                    onChange={(e) => setIsCustomCode(e.target.checked)}
-                    className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                  />
-                  Use custom room code
-                </label>
-                {isCustomCode && (
-                  <Input 
-                    placeholder="Enter 6 alphanumeric characters" 
-                    value={customRoomCode}
-                    onChange={(e) => setCustomRoomCode(e.target.value.toUpperCase())}
-                    maxLength={6}
-                  />
-                )}
-              </div>
-              <Button type="submit" className="w-full" isLoading={loading} disabled={!newRoomName.trim() || (isCustomCode && customRoomCode.length !== 6)}>
+              <Button type="submit" className="w-full" isLoading={loading} disabled={!newRoomName.trim()}>
                 Create Room
               </Button>
             </form>
@@ -2914,9 +2382,6 @@ CREATE POLICY "Users can delete their own reactions" ON reactions FOR DELETE USI
                         <Button type="button" variant="outline" className="w-full text-red-400 hover:text-red-300 border-red-500/20 hover:bg-red-500/10" onClick={() => setIsDeleting(true)}>
                           Delete Room
                         </Button>
-                        <Button type="button" variant="outline" className="w-full text-red-400 hover:text-red-300 border-red-500/20 hover:bg-red-500/10" onClick={() => setIsLeaving(true)}>
-                          Leave Room
-                        </Button>
                       </>
                     ) : (
                       <Button type="button" variant="outline" className="w-full text-red-400 hover:text-red-300 border-red-500/20 hover:bg-red-500/10" onClick={() => setIsLeaving(true)}>
@@ -2975,122 +2440,107 @@ CREATE POLICY "Users can delete their own reactions" ON reactions FOR DELETE USI
       {/* Context Menu */}
       <AnimatePresence>
         {contextMenu && (
-          <div className="fixed inset-0 z-[1000]" onClick={() => setContextMenu(null)}>
-            <motion.div
-              initial={{ opacity: 0, scale: 0.9, y: 10 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.9, y: 10 }}
-              style={{ 
-                position: 'fixed', 
-                top: contextMenu.y, 
-                left: contextMenu.x,
-              }}
-              className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl p-2 min-w-[200px] overflow-hidden backdrop-blur-md"
-              onClick={(e) => e.stopPropagation()}
-            >
-              {(() => {
-                const msg = messages.find(m => m.id === contextMenu.messageId);
-                if (!msg) return null;
-                const isMe = msg.user_id === user.id;
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            style={{ 
+              position: 'fixed', 
+              top: contextMenu.y, 
+              left: contextMenu.x,
+              zIndex: 1000
+            }}
+            className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-2xl py-1.5 min-w-[160px] overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {(() => {
+              const msg = messages.find(m => m.id === contextMenu.messageId);
+              if (!msg) return null;
+              const isMe = msg.user_id === user.id;
 
-                return (
-                  <div className="flex flex-col gap-1">
-                    <div className="flex items-center justify-center gap-1 p-2 border-b border-slate-100 dark:border-white/5 mb-1">
-                      {COMMON_EMOJIS.slice(0, 6).map(emoji => (
+              return (
+                <>
+                  <button
+                    onClick={() => {
+                      handleCopyMessage(msg.content);
+                      setContextMenu(null);
+                    }}
+                    className="w-full flex items-center gap-3 px-4 py-2 text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                  >
+                    <Copy className="w-4 h-4" />
+                    Copy Text
+                  </button>
+
+                  {activeRoom.created_by === user.id && (
+                    <button
+                      onClick={() => {
+                        handleTogglePin(msg);
+                        setContextMenu(null);
+                      }}
+                      className="w-full flex items-center gap-3 px-4 py-2 text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors border-t border-slate-100 dark:border-white/5"
+                    >
+                      {msg.is_pinned ? (
+                        <>
+                          <PinOff className="w-4 h-4 text-amber-400" />
+                          Unpin Message
+                        </>
+                      ) : (
+                        <>
+                          <Pin className="w-4 h-4 text-amber-400" />
+                          Pin Message
+                        </>
+                      )}
+                    </button>
+                  )}
+
+                  <div className="px-4 py-2 border-t border-slate-100 dark:border-white/5">
+                    <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">React</p>
+                    <div className="grid grid-cols-4 gap-1">
+                      {COMMON_EMOJIS.map(emoji => (
                         <button
                           key={emoji}
                           onClick={() => {
                             handleToggleReaction(msg.id, emoji);
                             setContextMenu(null);
                           }}
-                          className="w-8 h-8 flex items-center justify-center hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-all text-lg hover:scale-125"
+                          className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors text-lg"
                         >
                           {emoji}
                         </button>
                       ))}
                     </div>
-
+                  </div>
+                  
+                  {isMe && !msg.audio_url && (new Date().getTime() - new Date(msg.created_at).getTime()) < 15 * 60 * 1000 && (
                     <button
                       onClick={() => {
-                        handleCopyMessage(msg.content);
+                        setEditingMessageId(msg.id);
+                        setEditMessageContent(msg.content);
                         setContextMenu(null);
                       }}
-                      className="w-full flex items-center justify-center gap-3 px-3 py-2 text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-colors"
+                      className="w-full flex items-center gap-3 px-4 py-2 text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
                     >
-                      <Copy className="w-4 h-4 text-indigo-500" />
-                      <span className="font-medium">Copy Text</span>
+                      <Pencil className="w-4 h-4" />
+                      Edit Message
                     </button>
+                  )}
 
-                    {activeRoom.created_by === user.id && (
-                      <button
-                        onClick={() => {
-                          handleTogglePin(msg);
-                          setContextMenu(null);
-                        }}
-                        className="w-full flex items-center justify-center gap-3 px-3 py-2 text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-colors"
-                      >
-                        {(msg.is_pinned || msg.content?.startsWith('[PINNED] ')) ? (
-                          <>
-                            <PinOff className="w-4 h-4 text-amber-500" />
-                            <span className="font-medium">Unpin Message</span>
-                          </>
-                        ) : (
-                          <>
-                            <Pin className="w-4 h-4 text-amber-500" />
-                            <span className="font-medium">Pin Message</span>
-                          </>
-                        )}
-                      </button>
-                    )}
-
-                    {isMe && !msg.audio_url && (new Date().getTime() - new Date(msg.created_at).getTime()) < 15 * 60 * 1000 && (
-                      <button
-                        onClick={() => {
-                          setEditingMessageId(msg.id);
-                          setEditMessageContent(msg.content);
-                          setContextMenu(null);
-                        }}
-                        className="w-full flex items-center justify-center gap-3 px-3 py-2 text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-colors"
-                      >
-                        <Pencil className="w-4 h-4 text-emerald-500" />
-                        <span className="font-medium">Edit Message</span>
-                      </button>
-                    )}
-
-                    {isMe && (
-                      <button
-                        onClick={() => {
-                          setMessageToDeleteId(msg.id);
-                          setContextMenu(null);
-                        }}
-                        className="w-full flex items-center justify-center gap-3 px-3 py-2 text-sm text-red-500 hover:bg-red-500/10 rounded-xl transition-colors"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                        <span className="font-medium">Delete Message</span>
-                      </button>
-                    )}
-
-                    <div className="mt-1 pt-1 border-t border-slate-100 dark:border-white/5">
-                      <div className="grid grid-cols-5 gap-1 p-1">
-                        {COMMON_EMOJIS.slice(6).map(emoji => (
-                          <button
-                            key={emoji}
-                            onClick={() => {
-                              handleToggleReaction(msg.id, emoji);
-                              setContextMenu(null);
-                            }}
-                            className="w-8 h-8 flex items-center justify-center hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-all text-base"
-                          >
-                            {emoji}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })()}
-            </motion.div>
-          </div>
+                  {isMe && (
+                    <button
+                      onClick={() => {
+                        setMessageToDeleteId(msg.id);
+                        setContextMenu(null);
+                      }}
+                      className="w-full flex items-center gap-3 px-4 py-2 text-sm text-red-400 hover:bg-red-500/10 transition-colors"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                      Delete Message
+                    </button>
+                  )}
+                </>
+              );
+            })()}
+          </motion.div>
         )}
       </AnimatePresence>
     </div>
