@@ -51,6 +51,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const [newMessage, setNewMessage] = useState('');
   const [isDeleting, setIsDeleting] = useState(false);
   const [isLeaving, setIsLeaving] = useState(false);
+  const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -82,12 +83,21 @@ export const ChatDashboard = ({ user }: { user: any }) => {
 
   useEffect(() => {
     if (activeRoom) {
+      setMessages([]);
+      setMembers([]);
       fetchMessages(activeRoom.id);
       fetchMembers(activeRoom.id);
       
-      // Subscribe to real-time messages
-      const channel = supabase
-        .channel(`room:${activeRoom.id}`)
+      // Subscribe to real-time messages, members, and presence
+      const channel = supabase.channel(`room:${activeRoom.id}`, {
+        config: {
+          presence: {
+            key: user.id,
+          },
+        },
+      });
+
+      channel
         .on(
           'postgres_changes',
           {
@@ -98,17 +108,63 @@ export const ChatDashboard = ({ user }: { user: any }) => {
           },
           async (payload) => {
             const newMessage = payload.new as Message;
-            // Fetch profile for the new message
-            const { data: profile } = await supabase
+            // Fetch profile for the new message to show username/avatar
+            const { data: profileData } = await supabase
               .from('profiles')
               .select('*')
               .eq('id', newMessage.user_id)
               .single();
             
-            setMessages(prev => [...prev, { ...newMessage, profiles: profile }]);
+            setMessages(prev => {
+              // Prevent duplicate messages if the user sent it themselves and it's already in state
+              if (prev.some(m => m.id === newMessage.id)) return prev;
+              return [...prev, { ...newMessage, profiles: profileData }];
+            });
           }
         )
-        .subscribe();
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'room_members',
+            filter: `room_id=eq.${activeRoom.id}`
+          },
+          () => {
+            // Refresh members list when someone joins or leaves
+            fetchMembers(activeRoom.id);
+          }
+        )
+        .on('presence', { event: 'sync' }, () => {
+          const state = channel.presenceState();
+          const onlineIds = new Set<string>();
+          Object.keys(state).forEach((key) => {
+            onlineIds.add(key);
+          });
+          setOnlineUsers(onlineIds);
+        })
+        .on('presence', { event: 'join' }, ({ key }) => {
+          setOnlineUsers((prev) => {
+            const next = new Set(prev);
+            next.add(key);
+            return next;
+          });
+        })
+        .on('presence', { event: 'leave' }, ({ key }) => {
+          setOnlineUsers((prev) => {
+            const next = new Set(prev);
+            next.delete(key);
+            return next;
+          });
+        })
+        .subscribe(async (status) => {
+          if (status === 'SUBSCRIBED') {
+            await channel.track({
+              user_id: user.id,
+              online_at: new Date().toISOString(),
+            });
+          }
+        });
 
       return () => {
         supabase.removeChannel(channel);
@@ -927,13 +983,29 @@ export const ChatDashboard = ({ user }: { user: any }) => {
               </div>
               <div className="space-y-3">
                 {members.map((member) => (
-                  <div key={member.id} className="flex items-center gap-3 group">
-                    <div className="w-8 h-8 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center text-indigo-400 text-xs font-bold">
-                      {member.username?.[0]?.toUpperCase() || '?'}
+                  <div key={member.id} className="flex items-center justify-between group">
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center text-indigo-400 text-xs font-bold">
+                        {member.username?.[0]?.toUpperCase() || '?'}
+                      </div>
+                      <div className="flex flex-col">
+                        <span className="text-sm font-medium text-slate-400 group-hover:text-slate-200 transition-colors flex items-center gap-2">
+                          {member.username || 'Unknown'}
+                          {member.id === user.id && (
+                            <span className="text-[8px] bg-indigo-500/20 text-indigo-400 px-1.5 py-0.5 rounded-md font-bold uppercase tracking-tighter">You</span>
+                          )}
+                        </span>
+                        {activeRoom.created_by === member.id && (
+                          <span className="text-[9px] text-indigo-500 font-bold uppercase tracking-widest">Admin</span>
+                        )}
+                      </div>
                     </div>
-                    <span className="text-sm font-medium text-slate-400 group-hover:text-slate-200 transition-colors">
-                      {member.username || 'Unknown'}
-                    </span>
+                    <div className={cn(
+                      "w-2 h-2 rounded-full transition-all duration-300",
+                      onlineUsers.has(member.id) 
+                        ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" 
+                        : "bg-slate-600"
+                    )} title={onlineUsers.has(member.id) ? "Online" : "Offline"} />
                   </div>
                 ))}
               </div>
