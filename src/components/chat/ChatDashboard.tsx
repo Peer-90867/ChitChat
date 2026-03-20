@@ -138,6 +138,8 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const [showMembers, setShowMembers] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [newRoomName, setNewRoomName] = useState('');
+  const [isCustomCode, setIsCustomCode] = useState(false);
+  const [customRoomCode, setCustomRoomCode] = useState('');
   const [editRoomName, setEditRoomName] = useState('');
   const [joinCode, setJoinCode] = useState('');
   const [editUsername, setEditUsername] = useState('');
@@ -829,8 +831,12 @@ export const ChatDashboard = ({ user }: { user: any }) => {
 
   const handleCreateRoom = async () => {
     if (!newRoomName.trim()) return;
+    if (isCustomCode && !/^[a-zA-Z0-9]{6}$/.test(customRoomCode)) {
+      showToast('Room code must be 6 alphanumeric characters', 'error');
+      return;
+    }
     setLoading(true);
-    const code = generateRoomCode();
+    const code = isCustomCode ? customRoomCode.toUpperCase() : generateRoomCode();
     
     try {
       const { data: room, error: roomError } = await supabase
@@ -839,7 +845,13 @@ export const ChatDashboard = ({ user }: { user: any }) => {
         .select()
         .single();
 
-      if (roomError) throw roomError;
+      if (roomError) {
+        if (roomError.code === '23505') {
+          showToast('Room code already in use', 'error');
+        } else {
+          throw roomError;
+        }
+      }
 
       if (room) {
         const { error: memberError } = await supabase
@@ -852,6 +864,8 @@ export const ChatDashboard = ({ user }: { user: any }) => {
         setActiveRoom(room);
         setShowCreateModal(false);
         setNewRoomName('');
+        setCustomRoomCode('');
+        setIsCustomCode(false);
         showToast(`Room "${room.name}" created successfully!`);
       }
     } catch (error: any) {
@@ -2205,6 +2219,13 @@ CREATE POLICY "Users can delete their own reactions" ON reactions FOR DELETE USI
                             "flex items-center gap-2 mb-1 px-1",
                             isMe ? "flex-row-reverse" : "flex-row"
                           )}>
+                            <div className="w-5 h-5 rounded-md bg-slate-200 dark:bg-slate-800 flex items-center justify-center text-[10px] font-bold overflow-hidden border border-slate-300 dark:border-slate-700">
+                              {msg.profiles?.avatar_url ? (
+                                <img src={msg.profiles.avatar_url} alt="Avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                              ) : (
+                                msg.profiles?.username?.[0]?.toUpperCase() || '?'
+                              )}
+                            </div>
                             <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
                               {isMe ? 'You' : (msg.profiles?.username || 'Unknown')}
                             </span>
@@ -2585,7 +2606,7 @@ CREATE POLICY "Users can delete their own reactions" ON reactions FOR DELETE USI
                       <button 
                         type="button"
                         onClick={() => imageInputRef.current?.click()}
-                        className="p-2 text-slate-500 hover:text-indigo-400 transition-all"
+                        className="p-2.5 text-slate-500 hover:text-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded-xl transition-all"
                         title="Upload Image"
                       >
                         <ImageIcon className="w-5 h-5" />
@@ -2610,13 +2631,14 @@ CREATE POLICY "Users can delete their own reactions" ON reactions FOR DELETE USI
                       }}
                       placeholder={`Message #${activeRoom.name}`}
                       disabled={isRecording}
-                      className="w-full bg-slate-100 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl pl-24 pr-12 py-4 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all placeholder:text-slate-400 dark:placeholder:text-slate-600 shadow-2xl disabled:opacity-50"
+                      className="w-full bg-slate-100 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl pl-14 pr-24 py-4 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all placeholder:text-slate-400 dark:placeholder:text-slate-600 shadow-sm disabled:opacity-50"
                     />
                     <button 
                       type="button"
                       onClick={startRecording}
                       disabled={isUploadingVoice}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 p-2 text-slate-500 hover:text-indigo-400 transition-all"
+                      className="absolute right-16 top-1/2 -translate-y-1/2 p-2.5 text-slate-500 hover:text-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded-xl transition-all"
+                      title="Record Voice"
                     >
                       <Mic className="w-5 h-5" />
                     </button>
@@ -2731,7 +2753,26 @@ CREATE POLICY "Users can delete their own reactions" ON reactions FOR DELETE USI
                 onChange={(e) => setNewRoomName(e.target.value)}
                 autoFocus
               />
-              <Button type="submit" className="w-full" isLoading={loading} disabled={!newRoomName.trim()}>
+              <div className="space-y-2">
+                <label className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
+                  <input 
+                    type="checkbox" 
+                    checked={isCustomCode} 
+                    onChange={(e) => setIsCustomCode(e.target.checked)}
+                    className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                  />
+                  Use custom room code
+                </label>
+                {isCustomCode && (
+                  <Input 
+                    placeholder="Enter 6 alphanumeric characters" 
+                    value={customRoomCode}
+                    onChange={(e) => setCustomRoomCode(e.target.value.toUpperCase())}
+                    maxLength={6}
+                  />
+                )}
+              </div>
+              <Button type="submit" className="w-full" isLoading={loading} disabled={!newRoomName.trim() || (isCustomCode && customRoomCode.length !== 6)}>
                 Create Room
               </Button>
             </form>
