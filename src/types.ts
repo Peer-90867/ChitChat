@@ -26,6 +26,7 @@ export interface Message {
   room_id: string;
   user_id: string;
   content: string;
+  audio_url?: string;
   created_at: string;
   profiles?: Profile;
   reactions?: Reaction[];

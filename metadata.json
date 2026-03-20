@@ -1,5 +1,5 @@
 {
   "name": "ChitChat",
   "description": "A premium real-time chat application with private rooms, instant messaging, and a modern SaaS UI.",
-  "requestFramePermissions": []
+  "requestFramePermissions": ["microphone"]
 }

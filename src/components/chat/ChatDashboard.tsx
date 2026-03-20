@@ -22,7 +22,13 @@ import {
   X,
   History,
   AlertCircle,
-  Smile
+  Smile,
+  Mic,
+  Square,
+  Trash2,
+  Play,
+  Pause,
+  Volume2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
@@ -42,6 +48,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const [showJoinModal, setShowJoinModal] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [showRoomSettingsModal, setShowRoomSettingsModal] = useState(false);
+  const [showStorageGuide, setShowStorageGuide] = useState(false);
   const [copied, setCopied] = useState(false);
   const [showMobileRoomMenu, setShowMobileRoomMenu] = useState(false);
   const [showMembers, setShowMembers] = useState(false);
@@ -56,15 +63,29 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const [isDeleting, setIsDeleting] = useState(false);
   const [isLeaving, setIsLeaving] = useState(false);
   const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
-  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [toasts, setToasts] = useState<{ id: string; message: string; type: 'success' | 'error' }[]>([]);
   const [activeEmojiPicker, setActiveEmojiPicker] = useState<string | null>(null);
+  
+  // Voice Recording State
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingDuration, setRecordingDuration] = useState(0);
+  const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
+  const [audioChunks, setAudioChunks] = useState<Blob[]>([]);
+  const [isUploadingVoice, setIsUploadingVoice] = useState(false);
+  const recordingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const [playingAudioId, setPlayingAudioId] = useState<string | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const COMMON_EMOJIS = ['👍', '❤️', '🔥', '😂', '😮', '😢', '🙏', '✅'];
 
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
-    setToast({ message, type });
-    setTimeout(() => setToast(null), 3000);
+    const id = Math.random().toString(36).substring(2, 9);
+    setToasts(prev => [...prev, { id, message, type }]);
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, 3000);
   };
 
   useEffect(() => {
@@ -231,13 +252,25 @@ export const ChatDashboard = ({ user }: { user: any }) => {
 
   const fetchProfile = async () => {
     try {
-      const { data, error } = await supabase
+      let { data, error } = await supabase
         .from('profiles')
         .select('*')
         .eq('id', user.id)
-        .single();
+        .maybeSingle();
       
       if (error) throw error;
+      
+      if (!data) {
+        // Create profile if it doesn't exist (resilience for missing triggers)
+        const { data: newProfile, error: createError } = await supabase
+          .from('profiles')
+          .insert([{ id: user.id, username: user.email?.split('@')[0] || 'user' }])
+          .select()
+          .single();
+        
+        if (createError) throw createError;
+        data = newProfile;
+      }
       
       if (data) {
         setProfile(data);
@@ -352,7 +385,11 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     try {
       const { data, error } = await supabase
         .from('messages')
-        .select('*, profiles (*), reactions (*)')
+        .select(`
+          *,
+          profiles:user_id (*),
+          reactions (*)
+        `)
         .eq('room_id', roomId)
         .order('created_at', { ascending: true });
       
@@ -361,7 +398,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
       if (data) setMessages(data);
     } catch (error: any) {
       console.error('Error fetching messages:', error);
-      showToast('Failed to load message history', 'error');
+      showToast(`Failed to load message history: ${error.message || 'Unknown error'}`, 'error');
     }
   };
 
@@ -369,17 +406,23 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     try {
       const { data, error } = await supabase
         .from('room_members')
-        .select('profiles (*)')
+        .select(`
+          profiles:user_id (*)
+        `)
         .eq('room_id', roomId);
       
       if (error) throw error;
       
       if (data) {
-        setMembers(data.map((item: any) => item.profiles));
+        // Filter out any null profiles to prevent UI crashes
+        const validMembers = data
+          .map((item: any) => item.profiles)
+          .filter(Boolean);
+        setMembers(validMembers);
       }
     } catch (error: any) {
       console.error('Error fetching members:', error);
-      showToast('Failed to load room members', 'error');
+      showToast(`Failed to load room members: ${error.message || 'Unknown error'}`, 'error');
     }
   };
 
@@ -486,30 +529,6 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     });
   };
 
-  const handleSendMessage = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newMessage.trim() || !activeRoom) return;
-
-    const content = newMessage;
-    setNewMessage('');
-
-    try {
-      const { error } = await supabase
-        .from('messages')
-        .insert([{ 
-          room_id: activeRoom.id, 
-          user_id: user.id, 
-          content 
-        }]);
-
-      if (error) throw error;
-    } catch (error: any) {
-      console.error('Error sending message:', error);
-      showToast(error.message || 'Failed to send message. Please check your connection.', 'error');
-      setNewMessage(content); // Restore message on failure
-    }
-  };
-
   const handleToggleReaction = async (messageId: string, emoji: string) => {
     try {
       const existingReaction = messages
@@ -542,16 +561,204 @@ export const ChatDashboard = ({ user }: { user: any }) => {
 
   const handleLogout = () => supabase.auth.signOut();
 
+  // Voice Recording Functions
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      const chunks: Blob[] = [];
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunks.push(e.data);
+      };
+
+      recorder.onstop = async () => {
+        const audioBlob = new Blob(chunks, { type: 'audio/webm' });
+        await sendVoiceMessage(audioBlob);
+        stream.getTracks().forEach(track => track.stop());
+      };
+
+      setMediaRecorder(recorder);
+      setAudioChunks([]);
+      recorder.start();
+      setIsRecording(true);
+      setRecordingDuration(0);
+      
+      recordingIntervalRef.current = setInterval(() => {
+        setRecordingDuration(prev => prev + 1);
+      }, 1000);
+    } catch (error: any) {
+      console.error('Error starting recording:', error);
+      showToast('Could not access microphone. Please check permissions.', 'error');
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorder && isRecording) {
+      mediaRecorder.stop();
+      setIsRecording(false);
+      if (recordingIntervalRef.current) {
+        clearInterval(recordingIntervalRef.current);
+      }
+    }
+  };
+
+  const cancelRecording = () => {
+    if (mediaRecorder && isRecording) {
+      mediaRecorder.onstop = null; // Prevent sending
+      mediaRecorder.stop();
+      setIsRecording(false);
+      if (recordingIntervalRef.current) {
+        clearInterval(recordingIntervalRef.current);
+      }
+      mediaRecorder.stream.getTracks().forEach(track => track.stop());
+      showToast('Recording cancelled');
+    }
+  };
+
+  const sendVoiceMessage = async (audioBlob: Blob) => {
+    if (!activeRoom) return;
+    setIsUploadingVoice(true);
+
+    try {
+      const fileName = `${user.id}/${Date.now()}.webm`;
+      const { data, error: uploadError } = await supabase.storage
+        .from('voice-messages')
+        .upload(fileName, audioBlob);
+
+      if (uploadError) {
+        if (uploadError.message.toLowerCase().includes('bucket not found')) {
+          showToast('Storage bucket "voice-messages" is missing. Please create it in Supabase.', 'error');
+          setShowStorageGuide(true);
+          throw new Error('Bucket "voice-messages" not found.');
+        }
+        throw uploadError;
+      }
+
+      const { data: { publicUrl } } = supabase.storage
+        .from('voice-messages')
+        .getPublicUrl(fileName);
+
+      await handleSendMessage('Voice Message', publicUrl);
+    } catch (error: any) {
+      console.error('Error uploading voice message:', error);
+      showToast(error.message || 'Failed to upload voice message', 'error');
+    } finally {
+      setIsUploadingVoice(false);
+    }
+  };
+
+  const formatDuration = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const toggleAudio = (messageId: string, url: string) => {
+    if (playingAudioId === messageId) {
+      audioRef.current?.pause();
+      setPlayingAudioId(null);
+    } else {
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
+      const audio = new Audio(url);
+      audio.onended = () => setPlayingAudioId(null);
+      audio.play();
+      audioRef.current = audio;
+      setPlayingAudioId(messageId);
+    }
+  };
+
+  const handleSendMessage = async (content: string = newMessage, audioUrl?: string) => {
+    const textContent = typeof content === 'string' ? content : newMessage;
+    if (!textContent.trim() && !audioUrl) return;
+    if (!activeRoom) return;
+
+    if (!audioUrl) setNewMessage('');
+    
+    try {
+      const { error } = await supabase
+        .from('messages')
+        .insert([{ 
+          room_id: activeRoom.id, 
+          user_id: user.id, 
+          content: textContent,
+          audio_url: audioUrl
+        }]);
+
+      if (error) throw error;
+    } catch (error: any) {
+      console.error('Error sending message:', error);
+      showToast(error.message || 'Failed to send message. Please check your connection.', 'error');
+      if (!audioUrl) setNewMessage(textContent);
+    }
+  };
+
   return (
     <div className="flex h-screen bg-[#020617] text-slate-200 overflow-hidden relative">
       {/* Toast Notifications */}
+      <div className="fixed bottom-6 right-6 z-[100] flex flex-col-reverse gap-3 pointer-events-none">
+        <AnimatePresence>
+          {toasts.map(t => (
+            <div key={t.id} className="pointer-events-auto">
+              <Toast 
+                message={t.message} 
+                type={t.type} 
+                onClose={() => setToasts(prev => prev.filter(toast => toast.id !== t.id))} 
+              />
+            </div>
+          ))}
+        </AnimatePresence>
+      </div>
+
+      {/* Storage Troubleshooting Modal */}
       <AnimatePresence>
-        {toast && (
-          <Toast 
-            message={toast.message} 
-            type={toast.type} 
-            onClose={() => setToast(null)} 
-          />
+        {showStorageGuide && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-slate-900 border border-slate-800 p-6 rounded-2xl max-w-md w-full shadow-2xl"
+            >
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                  <Volume2 className="w-5 h-5 text-indigo-400" />
+                  Fix Voice Messages
+                </h3>
+                <button 
+                  onClick={() => setShowStorageGuide(false)}
+                  className="p-1 hover:bg-slate-800 rounded-full transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              
+              <div className="space-y-4 text-slate-300 text-sm">
+                <p>To enable voice messages, you need to create a storage bucket in your Supabase project:</p>
+                
+                <div className="bg-slate-950 p-3 rounded-lg border border-slate-800 font-mono text-xs overflow-x-auto">
+                  <p className="text-indigo-400"># Step 1</p>
+                  <p>Go to Supabase Dashboard &gt; Storage</p>
+                  <p className="text-indigo-400 mt-2"># Step 2</p>
+                  <p>Create bucket named: <span className="text-white">voice-messages</span></p>
+                  <p className="text-indigo-400 mt-2"># Step 3</p>
+                  <p>Set bucket to <span className="text-white">PUBLIC</span></p>
+                </div>
+
+                <button
+                  onClick={() => {
+                    copyToClipboard(`INSERT INTO storage.buckets (id, name, public) VALUES ('voice-messages', 'voice-messages', true);`);
+                    showToast('SQL copied! Run this in Supabase SQL Editor.');
+                  }}
+                  className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition-colors flex items-center justify-center gap-2"
+                >
+                  Copy SQL Fix
+                </button>
+              </div>
+            </motion.div>
+          </div>
         )}
       </AnimatePresence>
 
@@ -1177,7 +1384,38 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                               ? "bg-indigo-600 text-white rounded-tr-none" 
                               : "bg-slate-800 text-slate-200 rounded-tl-none border border-slate-700/50"
                           )}>
-                            {msg.content}
+                            {msg.audio_url ? (
+                              <div className="flex items-center gap-3 min-w-[200px] py-1">
+                                <button
+                                  onClick={() => toggleAudio(msg.id, msg.audio_url!)}
+                                  className={cn(
+                                    "w-10 h-10 rounded-full flex items-center justify-center transition-all",
+                                    isMe ? "bg-white/20 hover:bg-white/30" : "bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-400"
+                                  )}
+                                >
+                                  {playingAudioId === msg.id ? (
+                                    <Pause className="w-5 h-5 fill-current" />
+                                  ) : (
+                                    <Play className="w-5 h-5 fill-current ml-0.5" />
+                                  )}
+                                </button>
+                                <div className="flex-1 space-y-1">
+                                  <div className="flex items-center justify-between text-[10px] opacity-70 font-mono uppercase tracking-widest">
+                                    <span>Voice Message</span>
+                                    <Volume2 className="w-3 h-3" />
+                                  </div>
+                                  <div className="h-1 bg-white/10 rounded-full overflow-hidden">
+                                    <motion.div 
+                                      className={cn("h-full", isMe ? "bg-white/40" : "bg-indigo-500/40")}
+                                      animate={{ width: playingAudioId === msg.id ? '100%' : '0%' }}
+                                      transition={{ duration: 5, ease: "linear" }}
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+                            ) : (
+                              msg.content
+                            )}
                           </div>
 
                           {/* Emoji Picker Trigger */}
@@ -1259,22 +1497,78 @@ export const ChatDashboard = ({ user }: { user: any }) => {
 
             {/* Input Bar */}
             <div className="p-6">
-              <form onSubmit={handleSendMessage} className="relative">
-                <input
-                  type="text"
-                  value={newMessage}
-                  onChange={(e) => setNewMessage(e.target.value)}
-                  placeholder={`Message #${activeRoom.name}`}
-                  className="w-full bg-slate-900/50 border border-slate-800 rounded-2xl px-6 py-4 pr-16 text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all placeholder:text-slate-600 shadow-2xl"
-                />
-                <button 
-                  type="submit"
-                  disabled={!newMessage.trim()}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 p-2 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 disabled:opacity-50 disabled:hover:bg-indigo-600 transition-all shadow-lg shadow-indigo-500/20"
+              <div className="relative">
+                <AnimatePresence>
+                  {isRecording && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: 20 }}
+                      className="absolute inset-0 z-10 bg-[#0f172a] border border-indigo-500/30 rounded-2xl px-6 flex items-center justify-between shadow-2xl shadow-indigo-500/10"
+                    >
+                      <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-2">
+                          <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                          <span className="text-sm font-mono text-slate-300">{formatDuration(recordingDuration)}</span>
+                        </div>
+                        <span className="text-xs text-slate-500 uppercase tracking-widest font-bold">Recording...</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button 
+                          type="button"
+                          onClick={cancelRecording}
+                          className="p-2 text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded-xl transition-all"
+                          title="Cancel Recording"
+                        >
+                          <Trash2 className="w-5 h-5" />
+                        </button>
+                        <button 
+                          type="button"
+                          onClick={stopRecording}
+                          className="p-2 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-500/20"
+                          title="Stop and Send"
+                        >
+                          <Square className="w-5 h-5 fill-current" />
+                        </button>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                <form 
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    handleSendMessage();
+                  }} 
+                  className="relative flex items-center gap-2"
                 >
-                  <Send className="w-5 h-5" />
-                </button>
-              </form>
+                  <div className="relative flex-1">
+                    <input
+                      type="text"
+                      value={newMessage}
+                      onChange={(e) => setNewMessage(e.target.value)}
+                      placeholder={`Message #${activeRoom.name}`}
+                      disabled={isRecording}
+                      className="w-full bg-slate-900/50 border border-slate-800 rounded-2xl px-6 py-4 pr-12 text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all placeholder:text-slate-600 shadow-2xl disabled:opacity-50"
+                    />
+                    <button 
+                      type="button"
+                      onClick={startRecording}
+                      disabled={isUploadingVoice}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 p-2 text-slate-500 hover:text-indigo-400 transition-all"
+                    >
+                      <Mic className="w-5 h-5" />
+                    </button>
+                  </div>
+                  <button 
+                    type="submit"
+                    disabled={!newMessage.trim() || isUploadingVoice}
+                    className="p-4 bg-indigo-600 text-white rounded-2xl hover:bg-indigo-700 disabled:opacity-50 disabled:hover:bg-indigo-600 transition-all shadow-lg shadow-indigo-500/20 flex-shrink-0"
+                  >
+                    <Send className="w-5 h-5" />
+                  </button>
+                </form>
+              </div>
             </div>
           </>
         ) : (
@@ -1490,25 +1784,6 @@ export const ChatDashboard = ({ user }: { user: any }) => {
               <Button variant="ghost" className="w-full" onClick={() => setShowRoomSettingsModal(false)}>Close</Button>
             </div>
           </Modal>
-        )}
-      </AnimatePresence>
-      {/* Toast Notification */}
-      <AnimatePresence>
-        {toast && (
-          <motion.div
-            initial={{ opacity: 0, y: 50, scale: 0.9 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 50, scale: 0.9 }}
-            className={cn(
-              "fixed bottom-6 left-1/2 -translate-x-1/2 z-[100] px-6 py-3 rounded-2xl shadow-2xl flex items-center gap-3 border backdrop-blur-md",
-              toast.type === 'success' 
-                ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400" 
-                : "bg-red-500/10 border-red-500/20 text-red-400"
-            )}
-          >
-            {toast.type === 'success' ? <Check className="w-5 h-5" /> : <AlertCircle className="w-5 h-5" />}
-            <span className="font-medium">{toast.message}</span>
-          </motion.div>
         )}
       </AnimatePresence>
     </div>
