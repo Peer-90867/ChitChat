@@ -50,6 +50,8 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const [joinCode, setJoinCode] = useState('');
   const [editUsername, setEditUsername] = useState('');
   const [newMessage, setNewMessage] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showSearch, setShowSearch] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isLeaving, setIsLeaving] = useState(false);
   const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
@@ -489,6 +491,10 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     setActiveEmojiPicker(null);
   };
 
+  const filteredMessages = searchQuery.trim() 
+    ? messages.filter(m => m.content.toLowerCase().includes(searchQuery.toLowerCase()))
+    : messages;
+
   const handleLogout = () => supabase.auth.signOut();
 
   return (
@@ -830,6 +836,20 @@ export const ChatDashboard = ({ user }: { user: any }) => {
               <Button 
                 variant="ghost" 
                 size="icon" 
+                onClick={() => {
+                  setShowSearch(!showSearch);
+                  if (showSearch) setSearchQuery('');
+                }}
+                className={cn(
+                  "text-slate-400",
+                  showSearch ? 'text-indigo-400 bg-indigo-500/10' : ''
+                )}
+              >
+                <Search className="w-5 h-5" />
+              </Button>
+              <Button 
+                variant="ghost" 
+                size="icon" 
                 onClick={() => setShowMembers(!showMembers)}
                 className={cn(
                   "text-slate-400",
@@ -861,6 +881,17 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                         exit={{ opacity: 0, scale: 0.95, y: -10 }}
                         className="absolute right-0 mt-2 w-48 bg-slate-900 border border-slate-800 rounded-xl shadow-xl z-30 py-1 overflow-hidden"
                       >
+                        <button
+                          onClick={() => {
+                            setShowSearch(!showSearch);
+                            if (showSearch) setSearchQuery('');
+                            setShowMobileRoomMenu(false);
+                          }}
+                          className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-slate-300 hover:bg-slate-800 transition-colors"
+                        >
+                          <Search className="w-4 h-4" />
+                          {showSearch ? 'Hide Search' : 'Search Messages'}
+                        </button>
                         <button
                           onClick={() => {
                             setShowMembers(!showMembers);
@@ -897,6 +928,37 @@ export const ChatDashboard = ({ user }: { user: any }) => {
 
         {activeRoom ? (
           <>
+            {/* Mobile Search Bar */}
+            <AnimatePresence>
+              {showSearch && activeRoom && (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  className="lg:hidden px-4 py-2 border-b border-white/5 bg-[#020617]/50"
+                >
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                    <input
+                      type="text"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="Search messages..."
+                      className="w-full bg-slate-900/50 border border-white/5 rounded-xl pl-10 pr-10 py-2 text-sm text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500/50 placeholder:text-slate-600"
+                    />
+                    {searchQuery && (
+                      <button 
+                        onClick={() => setSearchQuery('')}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-slate-500 hover:text-slate-300"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
             {/* Desktop Header */}
             <header className="hidden lg:flex h-16 px-6 border-b border-white/5 items-center justify-between bg-[#020617]/50 backdrop-blur-md z-10">
               <div className="flex items-center gap-3 min-w-0">
@@ -931,6 +993,42 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                 </div>
               </div>
               <div className="flex items-center gap-2">
+                <div className={cn(
+                  "flex items-center transition-all duration-300 overflow-hidden",
+                  showSearch ? "w-48 sm:w-64 opacity-100" : "w-0 opacity-0"
+                )}>
+                  <div className="relative w-full">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
+                    <input
+                      type="text"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="Search messages..."
+                      className="w-full bg-slate-900/50 border border-white/5 rounded-xl pl-9 pr-4 py-1.5 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500/50 placeholder:text-slate-600"
+                    />
+                    {searchQuery && (
+                      <button 
+                        onClick={() => setSearchQuery('')}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-500 hover:text-slate-300"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <Button 
+                  variant="ghost" 
+                  size="icon" 
+                  onClick={() => {
+                    setShowSearch(!showSearch);
+                    if (showSearch) setSearchQuery('');
+                  }}
+                  className={cn(
+                    showSearch ? 'text-indigo-400 bg-indigo-500/10' : ''
+                  )}
+                >
+                  <Search className="w-5 h-5" />
+                </Button>
                 <Button 
                   variant="ghost" 
                   size="icon" 
@@ -961,8 +1059,21 @@ export const ChatDashboard = ({ user }: { user: any }) => {
 
             {/* Messages */}
             <div className="flex-1 overflow-y-auto p-6 space-y-6 scrollbar-thin scrollbar-thumb-slate-800">
+              {searchQuery && (
+                <div className="flex items-center justify-between bg-indigo-500/5 border border-indigo-500/10 px-4 py-2 rounded-xl mb-4">
+                  <p className="text-xs text-indigo-400 font-medium">
+                    Found {filteredMessages.length} results for "{searchQuery}"
+                  </p>
+                  <button 
+                    onClick={() => setSearchQuery('')}
+                    className="text-[10px] font-bold uppercase tracking-wider text-indigo-400 hover:text-indigo-300"
+                  >
+                    Clear
+                  </button>
+                </div>
+              )}
               <AnimatePresence initial={false}>
-                {messages.map((msg) => {
+                {filteredMessages.map((msg) => {
                   const isMe = msg.user_id === user.id;
                   return (
                     <motion.div
