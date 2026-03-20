@@ -28,6 +28,7 @@ export interface Message {
   content: string;
   audio_url?: string;
   created_at: string;
+  updated_at?: string;
   profiles?: Profile;
   reactions?: Reaction[];
 }

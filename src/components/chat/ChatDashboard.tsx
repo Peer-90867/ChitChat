@@ -28,7 +28,8 @@ import {
   Trash2,
   Play,
   Pause,
-  Volume2
+  Volume2,
+  Pencil
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
@@ -65,6 +66,8 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
   const [toasts, setToasts] = useState<{ id: string; message: string; type: 'success' | 'error' }[]>([]);
   const [activeEmojiPicker, setActiveEmojiPicker] = useState<string | null>(null);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editMessageContent, setEditMessageContent] = useState('');
   
   // Voice Recording State
   const [isRecording, setIsRecording] = useState(false);
@@ -153,6 +156,19 @@ export const ChatDashboard = ({ user }: { user: any }) => {
         .on(
           'postgres_changes',
           {
+            event: 'UPDATE',
+            schema: 'public',
+            table: 'messages',
+            filter: `room_id=eq.${activeRoom.id}`
+          },
+          async (payload) => {
+            const updatedMessage = payload.new as Message;
+            setMessages(prev => prev.map(m => m.id === updatedMessage.id ? { ...m, ...updatedMessage } : m));
+          }
+        )
+        .on(
+          'postgres_changes',
+          {
             event: '*',
             schema: 'public',
             table: 'room_members',
@@ -206,8 +222,14 @@ export const ChatDashboard = ({ user }: { user: any }) => {
           }
         });
 
+      // Polling fallback: Refresh messages every 2.5 seconds as requested
+      const pollingInterval = setInterval(() => {
+        fetchMessages(activeRoom.id);
+      }, 2500);
+
       return () => {
         supabase.removeChannel(channel);
+        clearInterval(pollingInterval);
       };
     }
   }, [activeRoom]);
@@ -352,6 +374,23 @@ export const ChatDashboard = ({ user }: { user: any }) => {
       setShowRoomSettingsModal(false);
       setIsLeaving(false);
       showToast('Left room successfully!');
+    } else {
+      showToast(error.message, 'error');
+    }
+  };
+
+  const handleEditMessage = async (messageId: string) => {
+    if (!editMessageContent.trim()) return;
+    
+    const { error } = await supabase
+      .from('messages')
+      .update({ content: editMessageContent, updated_at: new Date().toISOString() })
+      .eq('id', messageId);
+
+    if (!error) {
+      setEditingMessageId(null);
+      setEditMessageContent('');
+      showToast('Message edited successfully!');
     } else {
       showToast(error.message, 'error');
     }
@@ -1413,14 +1452,42 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                                   </div>
                                 </div>
                               </div>
+                            ) : editingMessageId === msg.id ? (
+                              <div className="flex flex-col gap-2 min-w-[200px]">
+                                <textarea
+                                  value={editMessageContent}
+                                  onChange={(e) => setEditMessageContent(e.target.value)}
+                                  className="w-full bg-slate-900/50 border border-white/10 rounded-lg p-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-indigo-500/50 resize-none min-h-[60px]"
+                                  autoFocus
+                                />
+                                <div className="flex justify-end gap-2">
+                                  <button 
+                                    onClick={() => setEditingMessageId(null)}
+                                    className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 hover:text-slate-200"
+                                  >
+                                    Cancel
+                                  </button>
+                                  <button 
+                                    onClick={() => handleEditMessage(msg.id)}
+                                    className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider bg-indigo-500 text-white rounded-md hover:bg-indigo-400"
+                                  >
+                                    Save
+                                  </button>
+                                </div>
+                              </div>
                             ) : (
-                              msg.content
+                              <div className="flex flex-col gap-1">
+                                <span>{msg.content}</span>
+                                {msg.updated_at && (
+                                  <span className="text-[9px] opacity-50 italic">(edited)</span>
+                                )}
+                              </div>
                             )}
                           </div>
 
-                          {/* Emoji Picker Trigger */}
+                          {/* Message Actions Trigger */}
                           <div className={cn(
-                            "absolute top-0 opacity-0 group-hover/bubble:opacity-100 transition-opacity z-10",
+                            "absolute top-0 opacity-0 group-hover/bubble:opacity-100 transition-opacity z-10 flex gap-1",
                             isMe ? "right-full mr-2" : "left-full ml-2"
                           )}>
                             <button
@@ -1429,6 +1496,18 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                             >
                               <Smile className="w-4 h-4" />
                             </button>
+                            
+                            {isMe && !msg.audio_url && (new Date().getTime() - new Date(msg.created_at).getTime()) < 15 * 60 * 1000 && (
+                              <button
+                                onClick={() => {
+                                  setEditingMessageId(msg.id);
+                                  setEditMessageContent(msg.content);
+                                }}
+                                className="p-1.5 text-slate-500 hover:text-indigo-400 hover:bg-slate-800 rounded-lg transition-colors bg-slate-900/80 backdrop-blur-sm border border-slate-800"
+                              >
+                                <Pencil className="w-4 h-4" />
+                              </button>
+                            )}
                             
                             <AnimatePresence>
                               {activeEmojiPicker === msg.id && (
