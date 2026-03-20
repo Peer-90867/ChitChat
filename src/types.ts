@@ -13,6 +13,14 @@ export interface Room {
   created_at: string;
 }
 
+export interface Reaction {
+  id: string;
+  message_id: string;
+  user_id: string;
+  emoji: string;
+  created_at: string;
+}
+
 export interface Message {
   id: string;
   room_id: string;
@@ -20,6 +28,7 @@ export interface Message {
   content: string;
   created_at: string;
   profiles?: Profile;
+  reactions?: Reaction[];
 }
 
 export interface RoomMember {

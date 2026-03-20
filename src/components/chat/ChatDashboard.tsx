@@ -21,7 +21,8 @@ import {
   Menu,
   X,
   History,
-  AlertCircle
+  AlertCircle,
+  Smile
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
@@ -53,7 +54,10 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const [isLeaving, setIsLeaving] = useState(false);
   const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [activeEmojiPicker, setActiveEmojiPicker] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const COMMON_EMOJIS = ['👍', '❤️', '🔥', '😂', '😮', '😢', '🙏', '✅'];
 
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
     setToast({ message, type });
@@ -135,6 +139,18 @@ export const ChatDashboard = ({ user }: { user: any }) => {
             fetchMembers(activeRoom.id);
           }
         )
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'reactions',
+          },
+          async (payload) => {
+            // Refresh messages to get updated reactions
+            if (activeRoom) fetchMessages(activeRoom.id);
+          }
+        )
         .on('presence', { event: 'sync' }, () => {
           const state = channel.presenceState();
           const onlineIds = new Set<string>();
@@ -175,6 +191,36 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ctrl/Cmd + S: Open Settings (Profile Modal)
+      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+        e.preventDefault();
+        setShowProfileModal(true);
+      }
+
+      // Ctrl/Cmd + ArrowUp / ArrowDown: Switch Rooms
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+        e.preventDefault();
+        if (rooms.length === 0) return;
+
+        const currentIndex = activeRoom ? rooms.findIndex(r => r.id === activeRoom.id) : -1;
+        let nextIndex;
+
+        if (e.key === 'ArrowUp') {
+          nextIndex = currentIndex <= 0 ? rooms.length - 1 : currentIndex - 1;
+        } else {
+          nextIndex = currentIndex === rooms.length - 1 ? 0 : currentIndex + 1;
+        }
+
+        setActiveRoom(rooms[nextIndex]);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [rooms, activeRoom]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -286,7 +332,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const fetchMessages = async (roomId: string) => {
     const { data } = await supabase
       .from('messages')
-      .select('*, profiles (*)')
+      .select('*, profiles (*), reactions (*)')
       .eq('room_id', roomId)
       .order('created_at', { ascending: true });
     
@@ -423,6 +469,24 @@ export const ChatDashboard = ({ user }: { user: any }) => {
       }]);
 
     if (error) console.error(error);
+  };
+
+  const handleToggleReaction = async (messageId: string, emoji: string) => {
+    const existingReaction = messages
+      .find(m => m.id === messageId)
+      ?.reactions?.find(r => r.user_id === user.id && r.emoji === emoji);
+
+    if (existingReaction) {
+      await supabase
+        .from('reactions')
+        .delete()
+        .eq('id', existingReaction.id);
+    } else {
+      await supabase
+        .from('reactions')
+        .insert([{ message_id: messageId, user_id: user.id, emoji }]);
+    }
+    setActiveEmojiPicker(null);
   };
 
   const handleLogout = () => supabase.auth.signOut();
@@ -898,27 +962,130 @@ export const ChatDashboard = ({ user }: { user: any }) => {
             {/* Messages */}
             <div className="flex-1 overflow-y-auto p-6 space-y-6 scrollbar-thin scrollbar-thumb-slate-800">
               <AnimatePresence initial={false}>
-                {messages.map((msg) => (
-                  <motion.div
-                    key={msg.id}
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="flex gap-4 group"
-                  >
-                    <div className="w-10 h-10 rounded-xl bg-slate-800 border border-slate-700 flex-shrink-0 flex items-center justify-center text-indigo-400 font-bold">
-                      {msg.profiles?.username?.[0]?.toUpperCase() || '?'}
-                    </div>
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span className="font-bold text-white">{msg.profiles?.username || 'Unknown'}</span>
-                        <span className="text-[10px] text-slate-500 uppercase tracking-widest">
-                          {format(new Date(msg.created_at), 'HH:mm')}
-                        </span>
+                {messages.map((msg) => {
+                  const isMe = msg.user_id === user.id;
+                  return (
+                    <motion.div
+                      key={msg.id}
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className={cn(
+                        "flex gap-3 group",
+                        isMe ? "flex-row-reverse" : "flex-row"
+                      )}
+                    >
+                      {/* Avatar */}
+                      <div className={cn(
+                        "w-8 h-8 rounded-lg flex-shrink-0 flex items-center justify-center text-xs font-bold border",
+                        isMe 
+                          ? "bg-indigo-500/20 border-indigo-500/30 text-indigo-400" 
+                          : "bg-slate-800 border-slate-700 text-slate-400"
+                      )}>
+                        {msg.profiles?.username?.[0]?.toUpperCase() || '?'}
                       </div>
-                      <p className="text-slate-300 leading-relaxed max-w-2xl">{msg.content}</p>
-                    </div>
-                  </motion.div>
-                ))}
+
+                      {/* Message Content */}
+                      <div className={cn(
+                        "flex flex-col max-w-[80%]",
+                        isMe ? "items-end" : "items-start"
+                      )}>
+                        {/* Header: Name & Time */}
+                        <div className={cn(
+                          "flex items-center gap-2 mb-1 px-1",
+                          isMe ? "flex-row-reverse" : "flex-row"
+                        )}>
+                          <span className="text-xs font-semibold text-slate-300">
+                            {isMe ? 'You' : (msg.profiles?.username || 'Unknown')}
+                          </span>
+                          <span className="text-[10px] text-slate-500 uppercase tracking-widest">
+                            {format(new Date(msg.created_at), 'HH:mm')}
+                          </span>
+                        </div>
+
+                        {/* Bubble */}
+                        <div className="relative group/bubble">
+                          <div className={cn(
+                            "px-4 py-2.5 rounded-2xl text-sm leading-relaxed shadow-lg",
+                            isMe 
+                              ? "bg-indigo-600 text-white rounded-tr-none" 
+                              : "bg-slate-800 text-slate-200 rounded-tl-none border border-slate-700/50"
+                          )}>
+                            {msg.content}
+                          </div>
+
+                          {/* Emoji Picker Trigger */}
+                          <div className={cn(
+                            "absolute top-0 opacity-0 group-hover/bubble:opacity-100 transition-opacity z-10",
+                            isMe ? "right-full mr-2" : "left-full ml-2"
+                          )}>
+                            <button
+                              onClick={() => setActiveEmojiPicker(activeEmojiPicker === msg.id ? null : msg.id)}
+                              className="p-1.5 text-slate-500 hover:text-indigo-400 hover:bg-slate-800 rounded-lg transition-colors bg-slate-900/80 backdrop-blur-sm border border-slate-800"
+                            >
+                              <Smile className="w-4 h-4" />
+                            </button>
+                            
+                            <AnimatePresence>
+                              {activeEmojiPicker === msg.id && (
+                                <motion.div
+                                  initial={{ opacity: 0, scale: 0.9, y: 10 }}
+                                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                                  exit={{ opacity: 0, scale: 0.9, y: 10 }}
+                                  className={cn(
+                                    "absolute bottom-full mb-2 p-2 bg-slate-900 border border-slate-800 rounded-xl shadow-2xl z-50 flex gap-1",
+                                    isMe ? "right-0" : "left-0"
+                                  )}
+                                >
+                                  {COMMON_EMOJIS.map(emoji => (
+                                    <button
+                                      key={emoji}
+                                      onClick={() => handleToggleReaction(msg.id, emoji)}
+                                      className="p-1.5 hover:bg-slate-800 rounded-lg transition-colors text-lg"
+                                    >
+                                      {emoji}
+                                    </button>
+                                  ))}
+                                </motion.div>
+                              )}
+                            </AnimatePresence>
+                          </div>
+                        </div>
+                        
+                        {/* Reactions Display */}
+                        {msg.reactions && msg.reactions.length > 0 && (
+                          <div className={cn(
+                            "flex flex-wrap gap-1 mt-2",
+                            isMe ? "justify-end" : "justify-start"
+                          )}>
+                            {Object.entries(
+                              msg.reactions.reduce((acc, r) => {
+                                acc[r.emoji] = (acc[r.emoji] || 0) + 1;
+                                return acc;
+                              }, {} as Record<string, number>)
+                            ).map(([emoji, count]) => {
+                              const hasReacted = msg.reactions?.some(r => r.user_id === user.id && r.emoji === emoji);
+                              return (
+                                <button
+                                  key={emoji}
+                                  onClick={() => handleToggleReaction(msg.id, emoji)}
+                                  className={cn(
+                                    "flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold transition-all border",
+                                    hasReacted 
+                                      ? "bg-indigo-500/20 border-indigo-500/40 text-indigo-400" 
+                                      : "bg-slate-800/80 border-white/5 text-slate-500 hover:border-white/10"
+                                  )}
+                                >
+                                  <span>{emoji}</span>
+                                  <span>{count}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    </motion.div>
+                  );
+                })}
               </AnimatePresence>
               <div ref={messagesEndRef} />
             </div>
@@ -1018,7 +1185,13 @@ export const ChatDashboard = ({ user }: { user: any }) => {
       <AnimatePresence>
         {showCreateModal && (
           <Modal title="Create Room" onClose={() => setShowCreateModal(false)}>
-            <div className="space-y-4">
+            <form 
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (newRoomName.trim()) handleCreateRoom();
+              }} 
+              className="space-y-4"
+            >
               <Input 
                 label="Room Name" 
                 placeholder="e.g. Design Team" 
@@ -1026,16 +1199,22 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                 onChange={(e) => setNewRoomName(e.target.value)}
                 autoFocus
               />
-              <Button className="w-full" onClick={handleCreateRoom} isLoading={loading} disabled={!newRoomName.trim()}>
+              <Button type="submit" className="w-full" isLoading={loading} disabled={!newRoomName.trim()}>
                 Create Room
               </Button>
-            </div>
+            </form>
           </Modal>
         )}
 
         {showJoinModal && (
           <Modal title="Join Room" onClose={() => setShowJoinModal(false)}>
-            <div className="space-y-4">
+            <form 
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (joinCode.trim()) handleJoinRoom();
+              }} 
+              className="space-y-4"
+            >
               <Input 
                 label="Room Code" 
                 placeholder="Enter 6-character code" 
@@ -1043,16 +1222,22 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                 onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
                 autoFocus
               />
-              <Button className="w-full" onClick={handleJoinRoom} isLoading={loading} disabled={!joinCode.trim()}>
+              <Button type="submit" className="w-full" isLoading={loading} disabled={!joinCode.trim()}>
                 Join Room
               </Button>
-            </div>
+            </form>
           </Modal>
         )}
 
         {showProfileModal && (
           <Modal title="Edit Profile" onClose={() => setShowProfileModal(false)}>
-            <div className="space-y-4">
+            <form 
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (editUsername.trim()) handleUpdateProfile();
+              }} 
+              className="space-y-4"
+            >
               <div className="flex justify-center mb-6">
                 <div className="w-20 h-20 rounded-2xl bg-slate-800 border-2 border-indigo-500/30 flex items-center justify-center text-3xl text-indigo-400 font-bold">
                   {editUsername?.[0]?.toUpperCase() || user.email[0].toUpperCase()}
@@ -1064,11 +1249,11 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                 value={editUsername}
                 onChange={(e) => setEditUsername(e.target.value)}
               />
-              <div className="pt-2">
-                <Button className="w-full" onClick={handleUpdateProfile}>Save Changes</Button>
+              <div className="pt-2 space-y-2">
+                <Button type="submit" className="w-full">Save Changes</Button>
+                <Button type="button" variant="ghost" className="w-full" onClick={() => setShowProfileModal(false)}>Cancel</Button>
               </div>
-              <Button variant="ghost" className="w-full" onClick={() => setShowProfileModal(false)}>Cancel</Button>
-            </div>
+            </form>
           </Modal>
         )}
 
@@ -1080,7 +1265,13 @@ export const ChatDashboard = ({ user }: { user: any }) => {
           }}>
             <div className="space-y-6">
               {!isDeleting && !isLeaving ? (
-                <>
+                <form 
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (editRoomName.trim() && activeRoom.created_by === user.id) handleUpdateRoom();
+                  }}
+                  className="space-y-6"
+                >
                   <Input 
                     label="Room Name" 
                     placeholder="Enter new room name" 
@@ -1092,18 +1283,18 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                   <div className="space-y-2">
                     {activeRoom.created_by === user.id ? (
                       <>
-                        <Button className="w-full" onClick={handleUpdateRoom}>Update Name</Button>
-                        <Button variant="outline" className="w-full text-red-400 hover:text-red-300 border-red-500/20 hover:bg-red-500/10" onClick={() => setIsDeleting(true)}>
+                        <Button type="submit" className="w-full">Update Name</Button>
+                        <Button type="button" variant="outline" className="w-full text-red-400 hover:text-red-300 border-red-500/20 hover:bg-red-500/10" onClick={() => setIsDeleting(true)}>
                           Delete Room
                         </Button>
                       </>
                     ) : (
-                      <Button variant="outline" className="w-full text-red-400 hover:text-red-300 border-red-500/20 hover:bg-red-500/10" onClick={() => setIsLeaving(true)}>
+                      <Button type="button" variant="outline" className="w-full text-red-400 hover:text-red-300 border-red-500/20 hover:bg-red-500/10" onClick={() => setIsLeaving(true)}>
                         Leave Room
                       </Button>
                     )}
                   </div>
-                </>
+                </form>
               ) : isDeleting ? (
                 <div className="space-y-4 text-center">
                   <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-xl">
