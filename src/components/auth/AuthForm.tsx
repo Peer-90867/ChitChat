@@ -48,20 +48,20 @@ export const AuthForm = () => {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-[#020617] p-4">
+    <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-[#020617] p-4 transition-colors duration-300">
       <motion.div 
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
-        className="w-full max-w-md space-y-8 p-8 rounded-2xl bg-slate-900/50 border border-slate-800 backdrop-blur-xl"
+        className="w-full max-w-md space-y-8 p-8 rounded-2xl bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 backdrop-blur-xl shadow-xl dark:shadow-none transition-colors duration-300"
       >
         <div className="text-center space-y-2">
           <div className="inline-flex items-center justify-center w-12 h-12 bg-indigo-600 rounded-xl mb-4">
             <MessageSquare className="w-6 h-6 text-white" />
           </div>
-          <h2 className="text-3xl font-bold text-white">
+          <h2 className="text-3xl font-bold text-slate-900 dark:text-white">
             {isLogin ? 'Welcome back' : 'Create account'}
           </h2>
-          <p className="text-slate-400">
+          <p className="text-slate-600 dark:text-slate-400">
             {isLogin ? 'Enter your credentials to access ChitChat' : 'Join the premium chat experience'}
           </p>
         </div>

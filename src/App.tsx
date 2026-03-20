@@ -5,6 +5,7 @@ import { AuthForm } from './components/auth/AuthForm';
 import { ChatDashboard } from './components/chat/ChatDashboard';
 import { motion, AnimatePresence } from 'motion/react';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { ThemeProvider } from './context/ThemeContext';
 
 export default function App() {
   const [session, setSession] = useState<any>(null);
@@ -28,50 +29,52 @@ export default function App() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-[#020617] flex items-center justify-center">
+      <div className="min-h-screen bg-slate-50 dark:bg-[#020617] flex items-center justify-center transition-colors duration-300">
         <div className="space-y-4 text-center">
           <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto" />
-          <p className="text-slate-400 text-sm animate-pulse">Initializing ChitChat...</p>
+          <p className="text-slate-500 dark:text-slate-400 text-sm animate-pulse">Initializing ChitChat...</p>
         </div>
       </div>
     );
   }
 
   return (
-    <ErrorBoundary>
-      <AnimatePresence mode="wait">
-        {!session ? (
-          showAuth ? (
-            <motion.div
-              key="auth"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-            >
-              <AuthForm />
-            </motion.div>
+    <ThemeProvider>
+      <ErrorBoundary>
+        <AnimatePresence mode="wait">
+          {!session ? (
+            showAuth ? (
+              <motion.div
+                key="auth"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+              >
+                <AuthForm />
+              </motion.div>
+            ) : (
+              <motion.div
+                key="landing"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+              >
+                <LandingPage onGetStarted={() => setShowAuth(true)} />
+              </motion.div>
+            )
           ) : (
             <motion.div
-              key="landing"
+              key="dashboard"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
+              className="h-screen"
             >
-              <LandingPage onGetStarted={() => setShowAuth(true)} />
+              <ChatDashboard user={session.user} />
             </motion.div>
-          )
-        ) : (
-          <motion.div
-            key="dashboard"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="h-screen"
-          >
-            <ChatDashboard user={session.user} />
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </ErrorBoundary>
+          )}
+        </AnimatePresence>
+      </ErrorBoundary>
+    </ThemeProvider>
   );
 }
