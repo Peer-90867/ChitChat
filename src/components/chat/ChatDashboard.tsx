@@ -29,7 +29,9 @@ import {
   Play,
   Pause,
   Volume2,
-  Pencil
+  Pencil,
+  Camera,
+  Upload
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
@@ -64,10 +66,15 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const [isDeleting, setIsDeleting] = useState(false);
   const [isLeaving, setIsLeaving] = useState(false);
   const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
+  const [typingUsers, setTypingUsers] = useState<Set<string>>(new Set());
   const [toasts, setToasts] = useState<{ id: string; message: string; type: 'success' | 'error' }[]>([]);
   const [activeEmojiPicker, setActiveEmojiPicker] = useState<string | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editMessageContent, setEditMessageContent] = useState('');
+  const [avatarFile, setAvatarFile] = useState<File | null>(null);
+  const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
+  const [messageToDeleteId, setMessageToDeleteId] = useState<string | null>(null);
   
   // Voice Recording State
   const [isRecording, setIsRecording] = useState(false);
@@ -78,6 +85,8 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const recordingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const [playingAudioId, setPlayingAudioId] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const activeChannelRef = useRef<any>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -127,6 +136,8 @@ export const ChatDashboard = ({ user }: { user: any }) => {
           },
         },
       });
+
+      activeChannelRef.current = channel;
 
       channel
         .on(
@@ -194,45 +205,72 @@ export const ChatDashboard = ({ user }: { user: any }) => {
         .on('presence', { event: 'sync' }, () => {
           const state = channel.presenceState();
           const onlineIds = new Set<string>();
+          const typingUsernames = new Set<string>();
+          
           Object.keys(state).forEach((key) => {
             onlineIds.add(key);
+            const userPresence = state[key] as any[];
+            if (userPresence && userPresence[0]?.is_typing && key !== user.id) {
+              typingUsernames.add(userPresence[0].username || 'Someone');
+            }
           });
+          
           setOnlineUsers(onlineIds);
+          setTypingUsers(typingUsernames);
         })
-        .on('presence', { event: 'join' }, ({ key }) => {
+        .on('presence', { event: 'join' }, ({ key, newPresences }) => {
           setOnlineUsers((prev) => {
             const next = new Set(prev);
             next.add(key);
             return next;
           });
+          
+          if (key !== user.id && newPresences[0]?.is_typing) {
+            setTypingUsers(prev => {
+              const next = new Set(prev);
+              next.add(newPresences[0].username || 'Someone');
+              return next;
+            });
+          }
         })
-        .on('presence', { event: 'leave' }, ({ key }) => {
+        .on('presence', { event: 'leave' }, ({ key, leftPresences }) => {
           setOnlineUsers((prev) => {
             const next = new Set(prev);
             next.delete(key);
             return next;
           });
+          
+          if (leftPresences[0]?.username) {
+            setTypingUsers(prev => {
+              const next = new Set(prev);
+              next.delete(leftPresences[0].username);
+              return next;
+            });
+          }
         })
         .subscribe(async (status) => {
           if (status === 'SUBSCRIBED') {
             await channel.track({
               user_id: user.id,
+              username: profile?.username || user.email?.split('@')[0] || 'user',
               online_at: new Date().toISOString(),
+              is_typing: false
             });
           }
         });
 
-      // Polling fallback: Refresh messages every 2.5 seconds as requested
+      // Polling fallback: Refresh messages every 0.5 seconds for faster updates as requested
       const pollingInterval = setInterval(() => {
         fetchMessages(activeRoom.id);
-      }, 2500);
+      }, 500);
 
       return () => {
         supabase.removeChannel(channel);
         clearInterval(pollingInterval);
+        activeChannelRef.current = null;
       };
     }
-  }, [activeRoom]);
+  }, [activeRoom, profile]);
 
   useEffect(() => {
     scrollToBottom();
@@ -306,18 +344,56 @@ export const ChatDashboard = ({ user }: { user: any }) => {
 
   const handleUpdateProfile = async () => {
     if (!editUsername.trim()) return;
+    setIsUploadingAvatar(true);
     
-    const { error } = await supabase
-      .from('profiles')
-      .update({ username: editUsername, updated_at: new Date().toISOString() })
-      .eq('id', user.id);
+    try {
+      let avatarUrl = profile?.avatar_url;
 
-    if (!error) {
-      setProfile(prev => prev ? { ...prev, username: editUsername } : null);
+      if (avatarFile) {
+        const fileExt = avatarFile.name.split('.').pop();
+        const fileName = `${user.id}-${Math.random()}.${fileExt}`;
+        const filePath = `avatars/${fileName}`;
+
+        const { error: uploadError } = await supabase.storage
+          .from('avatars')
+          .upload(filePath, avatarFile);
+
+        if (uploadError) {
+          if (uploadError.message.toLowerCase().includes('bucket not found')) {
+            showToast('Storage bucket "avatars" is missing. Please create it in Supabase.', 'error');
+            throw new Error('Bucket "avatars" not found.');
+          }
+          throw uploadError;
+        }
+
+        const { data: { publicUrl } } = supabase.storage
+          .from('avatars')
+          .getPublicUrl(filePath);
+        
+        avatarUrl = publicUrl;
+      }
+
+      const { error } = await supabase
+        .from('profiles')
+        .update({ 
+          username: editUsername, 
+          avatar_url: avatarUrl,
+          updated_at: new Date().toISOString() 
+        })
+        .eq('id', user.id);
+
+      if (error) throw error;
+
+      setProfile(prev => prev ? { ...prev, username: editUsername, avatar_url: avatarUrl } : null);
       setShowProfileModal(false);
+      setAvatarFile(null);
+      setAvatarPreview(null);
       showToast('Profile updated successfully!');
-    } else {
-      showToast(error.message, 'error');
+    } catch (error: any) {
+      console.error('Error updating profile:', error);
+      showToast(error.message || 'Failed to update profile', 'error');
+    } finally {
+      setIsUploadingAvatar(false);
     }
   };
 
@@ -394,6 +470,52 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     } else {
       showToast(error.message, 'error');
     }
+  };
+
+  const handleDeleteMessage = async () => {
+    if (!messageToDeleteId) return;
+    
+    const { error } = await supabase
+      .from('messages')
+      .delete()
+      .eq('id', messageToDeleteId);
+
+    if (!error) {
+      setMessageToDeleteId(null);
+      showToast('Message deleted successfully!');
+    } else {
+      showToast(error.message, 'error');
+    }
+  };
+
+  const handleTyping = async () => {
+    if (!activeChannelRef.current) return;
+
+    // Clear existing timeout
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+    }
+
+    // Update presence to typing: true
+    await activeChannelRef.current.track({
+      user_id: user.id,
+      username: profile?.username || user.email?.split('@')[0] || 'user',
+      online_at: new Date().toISOString(),
+      is_typing: true
+    });
+
+    // Set timeout to stop typing after 3 seconds
+    typingTimeoutRef.current = setTimeout(async () => {
+      if (activeChannelRef.current) {
+        await activeChannelRef.current.track({
+          user_id: user.id,
+          username: profile?.username || user.email?.split('@')[0] || 'user',
+          online_at: new Date().toISOString(),
+          is_typing: false
+        });
+      }
+      typingTimeoutRef.current = null;
+    }, 3000);
   };
 
   const fetchRooms = async () => {
@@ -927,9 +1049,13 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                       setShowProfileModal(true);
                       setIsMobileMenuOpen(false);
                     }}
-                    className="w-10 h-10 rounded-xl bg-indigo-500/20 flex items-center justify-center text-indigo-400 font-bold border border-indigo-500/20 hover:bg-indigo-500/30 transition-all"
+                    className="w-10 h-10 rounded-xl bg-indigo-500/20 flex items-center justify-center text-indigo-400 font-bold border border-indigo-500/20 hover:bg-indigo-500/30 transition-all overflow-hidden"
                   >
-                    {profile?.username?.[0]?.toUpperCase() || user.email[0].toUpperCase()}
+                    {profile?.avatar_url ? (
+                      <img src={profile.avatar_url} alt="Avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                    ) : (
+                      profile?.username?.[0]?.toUpperCase() || user.email[0].toUpperCase()
+                    )}
                   </button>
                   <div className="flex-1 min-w-0 cursor-pointer" onClick={() => {
                     setShowProfileModal(true);
@@ -1065,9 +1191,13 @@ export const ChatDashboard = ({ user }: { user: any }) => {
           <div className="flex items-center gap-3 px-2">
             <button 
               onClick={() => setShowProfileModal(true)}
-              className="w-10 h-10 rounded-xl bg-indigo-500/20 flex items-center justify-center text-indigo-400 font-bold border border-indigo-500/20 hover:bg-indigo-500/30 transition-all"
+              className="w-10 h-10 rounded-xl bg-indigo-500/20 flex items-center justify-center text-indigo-400 font-bold border border-indigo-500/20 hover:bg-indigo-500/30 transition-all overflow-hidden"
             >
-              {profile?.username?.[0]?.toUpperCase() || user.email[0].toUpperCase()}
+              {profile?.avatar_url ? (
+                <img src={profile.avatar_url} alt="Avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+              ) : (
+                profile?.username?.[0]?.toUpperCase() || user.email[0].toUpperCase()
+              )}
             </button>
             <div className="flex-1 min-w-0 cursor-pointer" onClick={() => setShowProfileModal(true)}>
               <p className="text-sm font-semibold text-slate-200 truncate">{profile?.username || 'User'}</p>
@@ -1389,12 +1519,16 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                     >
                       {/* Avatar */}
                       <div className={cn(
-                        "w-8 h-8 rounded-lg flex-shrink-0 flex items-center justify-center text-xs font-bold border",
+                        "w-8 h-8 rounded-lg flex-shrink-0 flex items-center justify-center text-xs font-bold border overflow-hidden",
                         isMe 
                           ? "bg-indigo-500/20 border-indigo-500/30 text-indigo-400" 
                           : "bg-slate-800 border-slate-700 text-slate-400"
                       )}>
-                        {msg.profiles?.username?.[0]?.toUpperCase() || '?'}
+                        {msg.profiles?.avatar_url ? (
+                          <img src={msg.profiles.avatar_url} alt="Avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                        ) : (
+                          msg.profiles?.username?.[0]?.toUpperCase() || '?'
+                        )}
                       </div>
 
                       {/* Message Content */}
@@ -1504,8 +1638,19 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                                   setEditMessageContent(msg.content);
                                 }}
                                 className="p-1.5 text-slate-500 hover:text-indigo-400 hover:bg-slate-800 rounded-lg transition-colors bg-slate-900/80 backdrop-blur-sm border border-slate-800"
+                                title="Edit Message"
                               >
                                 <Pencil className="w-4 h-4" />
+                              </button>
+                            )}
+
+                            {isMe && (
+                              <button
+                                onClick={() => setMessageToDeleteId(msg.id)}
+                                className="p-1.5 text-slate-500 hover:text-red-400 hover:bg-slate-800 rounded-lg transition-colors bg-slate-900/80 backdrop-blur-sm border border-slate-800"
+                                title="Delete Message"
+                              >
+                                <Trash2 className="w-4 h-4" />
                               </button>
                             )}
                             
@@ -1577,6 +1722,27 @@ export const ChatDashboard = ({ user }: { user: any }) => {
             {/* Input Bar */}
             <div className="p-6">
               <div className="relative">
+                {/* Typing Indicator */}
+                <AnimatePresence>
+                  {typingUsers.size > 0 && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: 10 }}
+                      className="absolute -top-6 left-2 flex items-center gap-2"
+                    >
+                      <div className="flex gap-1">
+                        <span className="w-1 h-1 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                        <span className="w-1 h-1 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                        <span className="w-1 h-1 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                      </div>
+                      <span className="text-[10px] font-medium text-slate-500 italic">
+                        {Array.from(typingUsers).join(', ')} {typingUsers.size === 1 ? 'is' : 'are'} typing...
+                      </span>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
                 <AnimatePresence>
                   {isRecording && (
                     <motion.div
@@ -1625,7 +1791,10 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                     <input
                       type="text"
                       value={newMessage}
-                      onChange={(e) => setNewMessage(e.target.value)}
+                      onChange={(e) => {
+                        setNewMessage(e.target.value);
+                        handleTyping();
+                      }}
                       placeholder={`Message #${activeRoom.name}`}
                       disabled={isRecording}
                       className="w-full bg-slate-900/50 border border-slate-800 rounded-2xl px-6 py-4 pr-12 text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all placeholder:text-slate-600 shadow-2xl disabled:opacity-50"
@@ -1692,8 +1861,12 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                 {members.map((member) => (
                   <div key={member.id} className="flex items-center justify-between group">
                     <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center text-indigo-400 text-xs font-bold">
-                        {member.username?.[0]?.toUpperCase() || '?'}
+                      <div className="w-8 h-8 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center text-indigo-400 text-xs font-bold overflow-hidden">
+                        {member.avatar_url ? (
+                          <img src={member.avatar_url} alt="Avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                        ) : (
+                          member.username?.[0]?.toUpperCase() || '?'
+                        )}
                       </div>
                       <div className="flex flex-col">
                         <span className="text-sm font-medium text-slate-400 group-hover:text-slate-200 transition-colors flex items-center gap-2">
@@ -1770,27 +1943,62 @@ export const ChatDashboard = ({ user }: { user: any }) => {
         )}
 
         {showProfileModal && (
-          <Modal title="Edit Profile" onClose={() => setShowProfileModal(false)}>
+          <Modal title="Edit Profile" onClose={() => {
+            setShowProfileModal(false);
+            setAvatarFile(null);
+            setAvatarPreview(null);
+          }}>
             <form 
               onSubmit={(e) => {
                 e.preventDefault();
                 if (editUsername.trim()) handleUpdateProfile();
               }} 
-              className="space-y-4"
+              className="space-y-6"
             >
-              <div className="flex justify-center mb-6">
-                <div className="w-20 h-20 rounded-2xl bg-slate-800 border-2 border-indigo-500/30 flex items-center justify-center text-3xl text-indigo-400 font-bold">
-                  {editUsername?.[0]?.toUpperCase() || user.email[0].toUpperCase()}
+              <div className="flex flex-col items-center gap-4">
+                <div className="relative group">
+                  <div className="w-24 h-24 rounded-3xl bg-slate-800 border-2 border-indigo-500/30 flex items-center justify-center text-4xl text-indigo-400 font-bold overflow-hidden shadow-xl">
+                    {avatarPreview || profile?.avatar_url ? (
+                      <img 
+                        src={avatarPreview || profile?.avatar_url} 
+                        alt="Avatar" 
+                        className="w-full h-full object-cover"
+                        referrerPolicy="no-referrer"
+                      />
+                    ) : (
+                      editUsername?.[0]?.toUpperCase() || user.email[0].toUpperCase()
+                    )}
+                  </div>
+                  <label className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer rounded-3xl backdrop-blur-[2px]">
+                    <Camera className="w-8 h-8 text-white" />
+                    <input 
+                      type="file" 
+                      className="hidden" 
+                      accept="image/*"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                          setAvatarFile(file);
+                          setAvatarPreview(URL.createObjectURL(file));
+                        }
+                      }}
+                    />
+                  </label>
                 </div>
+                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Click to change avatar</p>
               </div>
+
               <Input 
                 label="Username" 
                 placeholder="Your display name" 
                 value={editUsername}
                 onChange={(e) => setEditUsername(e.target.value)}
               />
+              
               <div className="pt-2 space-y-2">
-                <Button type="submit" className="w-full">Save Changes</Button>
+                <Button type="submit" className="w-full" isLoading={isUploadingAvatar}>
+                  {isUploadingAvatar ? 'Saving...' : 'Save Changes'}
+                </Button>
                 <Button type="button" variant="ghost" className="w-full" onClick={() => setShowProfileModal(false)}>Cancel</Button>
               </div>
             </form>
@@ -1861,6 +2069,22 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                 </div>
               )}
               <Button variant="ghost" className="w-full" onClick={() => setShowRoomSettingsModal(false)}>Close</Button>
+            </div>
+          </Modal>
+        )}
+
+        {messageToDeleteId && (
+          <Modal title="Delete Message" onClose={() => setMessageToDeleteId(null)}>
+            <div className="space-y-6">
+              <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-xl">
+                <p className="text-sm text-red-400">
+                  Are you sure you want to delete this message? This action cannot be undone.
+                </p>
+              </div>
+              <div className="flex gap-3">
+                <Button variant="ghost" className="flex-1" onClick={() => setMessageToDeleteId(null)}>Cancel</Button>
+                <Button className="flex-1 bg-red-600 hover:bg-red-700" onClick={handleDeleteMessage}>Delete</Button>
+              </div>
             </div>
           </Modal>
         )}
