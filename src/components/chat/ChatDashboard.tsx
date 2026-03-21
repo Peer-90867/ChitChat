@@ -44,7 +44,9 @@ import {
   BellOff,
   VolumeX,
   CheckCheck,
-  Filter
+  Filter,
+  Reply,
+  CornerUpLeft
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
@@ -123,6 +125,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const [hasUnread, setHasUnread] = useState(false);
   const [hasMore, setHasMore] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const MESSAGES_PER_PAGE = 30;
 
   const groupRooms = rooms.filter(r => !r.is_direct);
@@ -139,6 +142,14 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     const saved = localStorage.getItem('mutedRooms');
     return saved !== null ? new Set(JSON.parse(saved)) : new Set();
   });
+  const [roomSounds, setRoomSounds] = useState<Record<string, string>>(() => {
+    const saved = localStorage.getItem('roomSounds');
+    return saved !== null ? JSON.parse(saved) : {};
+  });
+  const [snoozeUntil, setSnoozeUntil] = useState<number | null>(() => {
+    const saved = localStorage.getItem('snoozeUntil');
+    return saved !== null ? JSON.parse(saved) : null;
+  });
   const [notificationSound, setNotificationSound] = useState<string>(() => {
     return localStorage.getItem('notificationSound') || 'pop';
   });
@@ -152,6 +163,14 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   }, [mutedRooms]);
 
   useEffect(() => {
+    localStorage.setItem('roomSounds', JSON.stringify(roomSounds));
+  }, [roomSounds]);
+
+  useEffect(() => {
+    localStorage.setItem('snoozeUntil', JSON.stringify(snoozeUntil));
+  }, [snoozeUntil]);
+
+  useEffect(() => {
     localStorage.setItem('notificationSound', notificationSound);
   }, [notificationSound]);
 
@@ -163,8 +182,9 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     bubble: 'https://assets.mixkit.co/active_storage/sfx/2359/2359-preview.mp3',
   };
 
-  const playNotificationSound = () => {
-    const soundUrl = NOTIFICATION_SOUNDS[notificationSound as keyof typeof NOTIFICATION_SOUNDS];
+  const playNotificationSound = (roomId?: string) => {
+    const soundKey = (roomId && roomSounds[roomId]) || notificationSound;
+    const soundUrl = NOTIFICATION_SOUNDS[soundKey as keyof typeof NOTIFICATION_SOUNDS];
     if (soundUrl) {
       const audio = new Audio(soundUrl);
       audio.play().catch(err => console.error('Error playing notification sound:', err));
@@ -206,9 +226,12 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     if (!globalNotificationsEnabled) return;
     if (mutedRooms.has(roomId)) return;
 
+    // Check for snooze
+    if (snoozeUntil && Date.now() < snoozeUntil) return;
+
     // Play sound if window is hidden OR if it's not the active room
     if (document.visibilityState === 'hidden' || activeRoom?.id !== roomId) {
-      playNotificationSound();
+      playNotificationSound(roomId);
     }
 
     if (notificationPermission === 'granted' && document.visibilityState === 'hidden') {
@@ -335,10 +358,20 @@ export const ChatDashboard = ({ user }: { user: any }) => {
               .eq('id', newMessage.user_id)
               .single();
             
+            let replyToMessage = null;
+            if (newMessage.reply_to_id) {
+              const { data: replyData } = await supabase
+                .from('messages')
+                .select('*, profiles(*)')
+                .eq('id', newMessage.reply_to_id)
+                .single();
+              replyToMessage = replyData;
+            }
+            
             setMessages(prev => {
               // Prevent duplicate messages if the user sent it themselves and it's already in state
               if (prev.some(m => m.id === newMessage.id)) return prev;
-              return [...prev, { ...newMessage, profiles: profileData }];
+              return [...prev, { ...newMessage, profiles: profileData, reply_to_message: replyToMessage }];
             });
 
             // Mark as read if it's a DM and we're the recipient
@@ -1023,28 +1056,55 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   };
 
   const handleStartDM = async (targetUser: Profile) => {
-    if (targetUser.id === user.id) return;
+    if (!user || !targetUser || targetUser.id === user.id) return;
 
     try {
-      // Generate unique DM code
-      const ids = [user.id, targetUser.id].sort();
-      const dmCode = `dm:${ids[0]}:${ids[1]}`;
-
-      // Check if DM exists
-      const { data: existingRoom, error: fetchError } = await supabase
-        .from('rooms')
-        .select('*')
-        .eq('code', dmCode)
-        .maybeSingle();
-
-      if (existingRoom) {
-        setActiveRoom({ ...existingRoom, other_user_profile: targetUser });
-        setShowMembers(false);
-        setIsMobileMenuOpen(false);
-        return;
+      // 1. Find all rooms where current user is a member
+      const { data: myRooms, error: myRoomsError } = await supabase
+        .from('room_members')
+        .select('room_id')
+        .eq('user_id', user.id);
+      
+      if (myRoomsError) throw myRoomsError;
+      
+      const myRoomIds = myRooms?.map(m => m.room_id) || [];
+      
+      if (myRoomIds.length > 0) {
+        // 2. Find if any of these rooms also have the target user as a member
+        const { data: commonRooms, error: commonError } = await supabase
+          .from('room_members')
+          .select('room_id')
+          .in('room_id', myRoomIds)
+          .eq('user_id', targetUser.id);
+          
+        if (commonError) throw commonError;
+        
+        const commonRoomIds = commonRooms?.map(m => m.room_id) || [];
+        
+        if (commonRoomIds.length > 0) {
+          // 3. Check if any of these common rooms are direct messages
+          const { data: existingRoom, error: roomError } = await supabase
+            .from('rooms')
+            .select('*')
+            .in('id', commonRoomIds)
+            .eq('is_direct', true)
+            .maybeSingle();
+            
+          if (roomError) throw roomError;
+          
+          if (existingRoom) {
+            setActiveRoom({ ...existingRoom, other_user_profile: targetUser });
+            setShowMembers(false);
+            setIsMobileMenuOpen(false);
+            return;
+          }
+        }
       }
 
-      // Create new DM room
+      // 4. Create new DM room if none exists
+      // Use a random 6-char code to satisfy potential VARCHAR(6) limit
+      const dmCode = generateRoomCode();
+
       const { data: newRoom, error: createError } = await supabase
         .from('rooms')
         .insert({
@@ -1057,6 +1117,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
         .single();
 
       if (createError) throw createError;
+      if (!newRoom) throw new Error('Failed to create room');
 
       // Add both users to room_members
       const { error: memberError } = await supabase
@@ -1076,7 +1137,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
       showToast(`Started conversation with ${targetUser.username}`);
     } catch (error: any) {
       console.error('Error starting DM:', error);
-      showToast('Failed to start direct message', 'error');
+      showToast(`Failed to start direct message: ${error.message || 'Unknown error'}`, 'error');
     }
   };
 
@@ -1089,7 +1150,8 @@ export const ChatDashboard = ({ user }: { user: any }) => {
         .from('messages')
         .select(`
           *,
-          reactions (*)
+          reactions (*),
+          reply_to_message:reply_to_id(*, profiles(*))
         `)
         .eq('room_id', roomId)
         .order('created_at', { ascending: false })
@@ -1500,7 +1562,11 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     if (!textContent.trim() && !audioUrl && !imageUrl) return;
     if (!activeRoom) return;
 
-    if (!audioUrl && !imageUrl) setNewMessage('');
+    const currentReplyTo = replyingTo;
+    if (!audioUrl && !imageUrl) {
+      setNewMessage('');
+      setReplyingTo(null);
+    }
     
     try {
       const url = extractUrl(textContent);
@@ -1512,7 +1578,8 @@ export const ChatDashboard = ({ user }: { user: any }) => {
           user_id: user.id, 
           content: textContent,
           audio_url: audioUrl,
-          image_url: imageUrl
+          image_url: imageUrl,
+          reply_to_id: currentReplyTo?.id
         }])
         .select()
         .single();
@@ -2443,6 +2510,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                   return (
                     <motion.div
                       key={msg.id}
+                      id={`msg-${msg.id}`}
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
                       className={cn(
@@ -2512,6 +2580,23 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                                   shouldGroup ? "rounded-tl-2xl" : "rounded-tl-none"
                                 )
                           )}>
+                            {msg.reply_to_message && (
+                              <div 
+                                className="mb-2 p-2 rounded-lg bg-black/5 dark:bg-white/5 border-l-2 border-indigo-500 text-[10px] opacity-80 cursor-pointer hover:bg-black/10 dark:hover:bg-white/10 transition-colors"
+                                onClick={() => {
+                                  const el = document.getElementById(`msg-${msg.reply_to_id}`);
+                                  el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                }}
+                              >
+                                <div className="font-bold text-indigo-400 mb-0.5">
+                                  {msg.reply_to_message.profiles?.username || 'Someone'}
+                                </div>
+                                <div className="truncate italic">
+                                  {msg.reply_to_message.content || (msg.reply_to_message.image_url ? '📷 Image' : (msg.reply_to_message.audio_url ? '🎤 Voice' : 'Message'))}
+                                </div>
+                              </div>
+                            )}
+
                             {msg.audio_url ? (
                               <div className="flex items-center gap-3 min-w-[200px] py-1">
                                 <button
@@ -2603,6 +2688,14 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                             "absolute top-0 opacity-0 group-hover/bubble:opacity-100 transition-opacity z-10 flex gap-1",
                             isMe ? "right-full mr-2" : "left-full ml-2"
                           )}>
+                            <button
+                              onClick={() => setReplyingTo(msg)}
+                              className="p-1.5 text-slate-500 hover:text-indigo-400 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition-colors bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm border border-slate-200 dark:border-slate-800"
+                              title="Reply"
+                            >
+                              <Reply className="w-4 h-4" />
+                            </button>
+
                             <button
                               onClick={() => setActiveEmojiPicker(activeEmojiPicker === msg.id ? null : msg.id)}
                               className="p-1.5 text-slate-500 hover:text-indigo-400 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition-colors bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm border border-slate-200 dark:border-slate-800"
@@ -2774,6 +2867,32 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                           <Square className="w-5 h-5 fill-current" />
                         </button>
                       </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                <AnimatePresence>
+                  {replyingTo && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: 10 }}
+                      className="absolute bottom-full left-0 right-0 mb-2 p-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-xl flex items-center justify-between z-20"
+                    >
+                      <div className="flex items-center gap-3 overflow-hidden">
+                        <div className="w-1 h-8 bg-indigo-500 rounded-full flex-shrink-0" />
+                        <div className="min-w-0">
+                          <p className="text-[10px] font-bold text-indigo-400 uppercase tracking-wider">Replying to {replyingTo.profiles?.username}</p>
+                          <p className="text-xs text-slate-500 dark:text-slate-400 truncate">{replyingTo.content || (replyingTo.image_url ? '📷 Image' : (replyingTo.audio_url ? '🎤 Voice' : 'Message'))}</p>
+                        </div>
+                      </div>
+                      <button 
+                        type="button"
+                        onClick={() => setReplyingTo(null)}
+                        className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
                     </motion.div>
                   )}
                 </AnimatePresence>
@@ -3131,6 +3250,50 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                     </button>
                   </div>
 
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                        <History className="w-3 h-3" /> Snooze Notifications
+                      </label>
+                      {snoozeUntil && Date.now() < snoozeUntil && (
+                        <button 
+                          onClick={() => setSnoozeUntil(null)}
+                          className="text-[10px] font-bold text-red-400 uppercase tracking-wider hover:text-red-300"
+                        >
+                          Cancel Snooze
+                        </button>
+                      )}
+                    </div>
+                    
+                    {snoozeUntil && Date.now() < snoozeUntil ? (
+                      <div className="p-3 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <div className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
+                          <span className="text-xs text-indigo-400 font-medium">
+                            Snoozed until {format(new Date(snoozeUntil), 'HH:mm')}
+                          </span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-4 gap-2">
+                        {[30, 60, 120, 480].map((mins) => (
+                          <button
+                            key={mins}
+                            type="button"
+                            onClick={() => {
+                              const until = Date.now() + mins * 60 * 1000;
+                              setSnoozeUntil(until);
+                              showToast(`Notifications snoozed for ${mins < 60 ? mins + 'm' : mins / 60 + 'h'}`);
+                            }}
+                            className="py-2 rounded-lg bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/5 text-[10px] font-bold text-slate-600 dark:text-slate-400 hover:bg-indigo-500/10 hover:border-indigo-500/30 hover:text-indigo-400 transition-all"
+                          >
+                            {mins < 60 ? mins + 'm' : mins / 60 + 'h'}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
                   <div className="space-y-2">
                     <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest flex items-center gap-2">
                       <Volume2 className="w-3 h-3" /> Notification Sound
@@ -3244,6 +3407,55 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                       >
                         {mutedRooms.has(activeRoom.id) ? 'Unmute' : 'Mute'}
                       </button>
+                    </div>
+
+                    <div className="space-y-3">
+                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                        <Volume2 className="w-3 h-3" /> Room Notification Sound
+                      </label>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setRoomSounds(prev => {
+                              const next = { ...prev };
+                              delete next[activeRoom.id];
+                              return next;
+                            });
+                            showToast('Room sound reset to default');
+                          }}
+                          className={cn(
+                            "px-3 py-2 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-all border col-span-2",
+                            !roomSounds[activeRoom.id]
+                              ? "bg-indigo-500 text-white border-indigo-500 shadow-lg shadow-indigo-500/20"
+                              : "bg-slate-100 dark:bg-white/5 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-white/5 hover:bg-slate-200 dark:hover:bg-white/10"
+                          )}
+                        >
+                          Use Global Default
+                        </button>
+                        {Object.keys(NOTIFICATION_SOUNDS).map((sound) => (
+                          <button
+                            key={`room-sound-${sound}`}
+                            type="button"
+                            onClick={() => {
+                              setRoomSounds(prev => ({ ...prev, [activeRoom.id]: sound }));
+                              // Preview sound
+                              const soundUrl = NOTIFICATION_SOUNDS[sound as keyof typeof NOTIFICATION_SOUNDS];
+                              if (soundUrl) {
+                                new Audio(soundUrl).play().catch(() => {});
+                              }
+                            }}
+                            className={cn(
+                              "px-3 py-2 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-all border",
+                              (roomSounds[activeRoom.id] || notificationSound) === sound
+                                ? "bg-indigo-500 text-white border-indigo-500 shadow-lg shadow-indigo-500/20"
+                                : "bg-slate-100 dark:bg-white/5 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-white/5 hover:bg-slate-200 dark:hover:bg-white/10"
+                            )}
+                          >
+                            {sound}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   </div>
 
