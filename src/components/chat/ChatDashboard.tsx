@@ -42,7 +42,9 @@ import {
   Moon,
   Bell,
   BellOff,
-  VolumeX
+  VolumeX,
+  CheckCheck,
+  Filter
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
@@ -54,6 +56,8 @@ import { LinkPreview } from './LinkPreview';
 import { ExternalLink } from 'lucide-react';
 import { validateImage, compressImage } from '@/src/lib/imageUtils';
 import { useTheme } from '../../context/ThemeContext';
+import Cropper, { Area, Point } from 'react-easy-crop';
+import getCroppedImg from '@/src/lib/cropImage';
 
 const generateRoomCode = customAlphabet('123456789ABCDEFGHJKLMNPQRSTUVWXYZ', 6);
 
@@ -70,6 +74,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   };
 
   const [rooms, setRooms] = useState<Room[]>([]);
+  const [sortBy, setSortBy] = useState<'newest' | 'unread'>('unread');
   const [activeRoom, setActiveRoom] = useState<Room | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [members, setMembers] = useState<Profile[]>([]);
@@ -102,11 +107,20 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const [avatarFile, setAvatarFile] = useState<Blob | null>(null);
   const [avatarFileName, setAvatarFileName] = useState<string>('');
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
+  const [isCropping, setIsCropping] = useState(false);
+  const [crop, setCrop] = useState<Point>({ x: 0, y: 0 });
+  const [zoom, setZoom] = useState(1);
+  const [croppedAreaPixels, setCroppedAreaPixels] = useState<Area | null>(null);
+  const [imageToCrop, setImageToCrop] = useState<string | null>(null);
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
   const [messageToDeleteId, setMessageToDeleteId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; messageId: string } | null>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [hasUnread, setHasUnread] = useState(false);
+
+  const groupRooms = rooms.filter(r => !r.is_direct);
+  const directMessages = rooms.filter(r => r.is_direct);
+
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(
     typeof Notification !== 'undefined' ? Notification.permission : 'default'
   );
@@ -247,6 +261,12 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   }, []);
 
   useEffect(() => {
+    if (user) {
+      fetchRooms();
+    }
+  }, [sortBy]);
+
+  useEffect(() => {
     const handleClick = () => setContextMenu(null);
     const handleScroll = () => setContextMenu(null);
     window.addEventListener('click', handleClick);
@@ -300,6 +320,11 @@ export const ChatDashboard = ({ user }: { user: any }) => {
               if (prev.some(m => m.id === newMessage.id)) return prev;
               return [...prev, { ...newMessage, profiles: profileData }];
             });
+
+            // Mark as read if it's a DM and we're the recipient
+            if (activeRoom.is_direct && newMessage.user_id !== user.id) {
+              markMessagesAsRead(activeRoom.id);
+            }
           }
         )
         .on(
@@ -456,12 +481,44 @@ export const ChatDashboard = ({ user }: { user: any }) => {
           const senderName = profileData?.username || 'Someone';
           const roomName = room.name || 'a room';
           
+          const notificationTitle = room.is_direct 
+            ? `New message from ${senderName}` 
+            : `New message in ${roomName}`;
+
           showNotification(
-            `New message in ${roomName}`,
+            notificationTitle,
             `${senderName}: ${newMessage.content.substring(0, 100)}${newMessage.content.length > 100 ? '...' : ''}`,
             newMessage.room_id,
             profileData?.avatar_url
           );
+
+          // Update local rooms state to increment unread count and update last message timestamp
+          setRooms(prev => {
+            const updatedRooms = prev.map(r => {
+              if (r.id === newMessage.room_id) {
+                // Only increment unread if it's not the active room
+                const isUnread = activeRoom?.id !== r.id;
+                return { 
+                  ...r, 
+                  unread_count: isUnread ? (r.unread_count || 0) + 1 : 0,
+                  last_message_at: newMessage.created_at
+                };
+              }
+              return r;
+            });
+
+            // Re-sort if needed
+            return [...updatedRooms].sort((a, b) => {
+              if (sortBy === 'unread') {
+                if (a.unread_count !== b.unread_count) {
+                  return (b.unread_count || 0) - (a.unread_count || 0);
+                }
+              }
+              const timeA = new Date(a.last_message_at || a.created_at).getTime();
+              const timeB = new Date(b.last_message_at || b.created_at).getTime();
+              return timeB - timeA;
+            });
+          });
         }
       )
       .subscribe();
@@ -557,6 +614,28 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     } catch (error: any) {
       console.error('Error fetching profile:', error);
       showToast('Failed to load profile settings', 'error');
+    }
+  };
+
+  const onCropComplete = (_: Area, croppedAreaPixels: Area) => {
+    setCroppedAreaPixels(croppedAreaPixels);
+  };
+
+  const handleCropSave = async () => {
+    if (!imageToCrop || !croppedAreaPixels) return;
+
+    try {
+      const croppedImage = await getCroppedImg(imageToCrop, croppedAreaPixels);
+      if (croppedImage) {
+        const compressed = await compressImage(new File([croppedImage], avatarFileName || 'avatar.jpg', { type: 'image/jpeg' }));
+        setAvatarFile(compressed);
+        setAvatarPreview(URL.createObjectURL(compressed));
+        setIsCropping(false);
+        setImageToCrop(null);
+      }
+    } catch (error) {
+      console.error('Error cropping image:', error);
+      showToast('Failed to crop image', 'error');
     }
   };
 
@@ -678,6 +757,24 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     }
   };
 
+  const markMessagesAsRead = async (roomId: string) => {
+    if (!user || !activeRoom?.is_direct) return;
+
+    const { error } = await supabase
+      .from('messages')
+      .update({ is_read: true })
+      .eq('room_id', roomId)
+      .neq('user_id', user.id)
+      .eq('is_read', false);
+
+    if (error) {
+      console.error('Error marking messages as read:', error);
+    } else {
+      // Update local rooms state to clear unread count
+      setRooms(prev => prev.map(r => r.id === roomId ? { ...r, unread_count: 0 } : r));
+    }
+  };
+
   const handleEditMessage = async (messageId: string) => {
     if (!editMessageContent.trim()) return;
     
@@ -759,25 +856,171 @@ export const ChatDashboard = ({ user }: { user: any }) => {
 
   const fetchRooms = async () => {
     try {
-      const { data, error } = await supabase
+      setLoading(true);
+      const { data: memberData, error: memberError } = await supabase
         .from('room_members')
-        .select('rooms (*)')
+        .select('room_id')
         .eq('user_id', user.id);
       
-      if (error) throw error;
+      if (memberError) throw memberError;
       
-      if (data) {
-        const formattedRooms = data.map((item: any) => item.rooms);
-        setRooms(formattedRooms);
-        if (formattedRooms.length > 0 && !activeRoom) {
-          setActiveRoom(formattedRooms[0]);
+      if (memberData && memberData.length > 0) {
+        const roomIds = memberData.map(m => m.room_id);
+        const { data: roomsData, error: roomsError } = await supabase
+          .from('rooms')
+          .select('*')
+          .in('id', roomIds)
+          .order('created_at', { ascending: false });
+        
+        if (roomsError) throw roomsError;
+
+        // For DMs, we need the other user's profile
+        const directRoomIds = roomsData.filter(r => r.is_direct).map(r => r.id);
+        
+        // Fetch unread counts for DMs
+        const { data: unreadMessages } = await supabase
+          .from('messages')
+          .select('room_id')
+          .neq('user_id', user.id)
+          .eq('is_read', false)
+          .in('room_id', roomIds);
+
+        const unreadCounts = (unreadMessages || []).reduce((acc: Record<string, number>, msg) => {
+          acc[msg.room_id] = (acc[msg.room_id] || 0) + 1;
+          return acc;
+        }, {});
+
+        // Fetch last message timestamp for each room
+        const { data: lastMessages } = await supabase
+          .from('messages')
+          .select('room_id, created_at')
+          .in('room_id', roomIds)
+          .order('created_at', { ascending: false });
+
+        const lastMessageMap = (lastMessages || []).reduce((acc: Record<string, string>, msg) => {
+          if (!acc[msg.room_id]) {
+            acc[msg.room_id] = msg.created_at;
+          }
+          return acc;
+        }, {});
+
+        let dmProfiles: Record<string, Profile> = {};
+        if (directRoomIds.length > 0) {
+          const { data: dmMemberData, error: dmMemberError } = await supabase
+            .from('room_members')
+            .select('room_id, user_id')
+            .in('room_id', directRoomIds)
+            .neq('user_id', user.id);
+          
+          if (!dmMemberError && dmMemberData) {
+            const otherUserIds = dmMemberData.map(m => m.user_id);
+            const { data: profileData } = await supabase
+              .from('profiles')
+              .select('*')
+              .in('id', otherUserIds);
+            
+            if (profileData) {
+              const profileMap = Object.fromEntries(profileData.map(p => [p.id, p]));
+              dmMemberData.forEach(m => {
+                if (profileMap[m.user_id]) {
+                  dmProfiles[m.room_id] = profileMap[m.user_id];
+                }
+              });
+            }
+          }
         }
+
+        const formattedRooms = roomsData.map(room => ({
+          ...room,
+          other_user_profile: dmProfiles[room.id],
+          unread_count: unreadCounts[room.id] || 0,
+          last_message_at: lastMessageMap[room.id] || room.created_at
+        }));
+
+        // Sort rooms based on sortBy preference
+        const sortedRooms = [...formattedRooms].sort((a, b) => {
+          if (sortBy === 'unread') {
+            // Unread messages first
+            if (a.unread_count !== b.unread_count) {
+              return (b.unread_count || 0) - (a.unread_count || 0);
+            }
+          }
+          // Then by last message activity
+          const timeA = new Date(a.last_message_at || a.created_at).getTime();
+          const timeB = new Date(b.last_message_at || b.created_at).getTime();
+          return timeB - timeA;
+        });
+
+        setRooms(sortedRooms);
+        if (sortedRooms.length > 0 && !activeRoom) {
+          setActiveRoom(sortedRooms[0]);
+        }
+      } else {
+        setRooms([]);
       }
     } catch (error: any) {
       console.error('Error fetching rooms:', error);
       showToast('Failed to load your rooms', 'error');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleStartDM = async (targetUser: Profile) => {
+    if (targetUser.id === user.id) return;
+
+    try {
+      // Generate unique DM code
+      const ids = [user.id, targetUser.id].sort();
+      const dmCode = `dm:${ids[0]}:${ids[1]}`;
+
+      // Check if DM exists
+      const { data: existingRoom, error: fetchError } = await supabase
+        .from('rooms')
+        .select('*')
+        .eq('code', dmCode)
+        .maybeSingle();
+
+      if (existingRoom) {
+        setActiveRoom({ ...existingRoom, other_user_profile: targetUser });
+        setShowMembers(false);
+        setIsMobileMenuOpen(false);
+        return;
+      }
+
+      // Create new DM room
+      const { data: newRoom, error: createError } = await supabase
+        .from('rooms')
+        .insert({
+          name: `DM: ${targetUser.username}`,
+          code: dmCode,
+          is_direct: true,
+          created_by: user.id
+        })
+        .select()
+        .single();
+
+      if (createError) throw createError;
+
+      // Add both users to room_members
+      const { error: memberError } = await supabase
+        .from('room_members')
+        .insert([
+          { room_id: newRoom.id, user_id: user.id },
+          { room_id: newRoom.id, user_id: targetUser.id }
+        ]);
+
+      if (memberError) throw memberError;
+
+      const roomWithProfile = { ...newRoom, other_user_profile: targetUser };
+      setRooms(prev => [roomWithProfile, ...prev]);
+      setActiveRoom(roomWithProfile);
+      setShowMembers(false);
+      setIsMobileMenuOpen(false);
+      showToast(`Started conversation with ${targetUser.username}`);
+    } catch (error: any) {
+      console.error('Error starting DM:', error);
+      showToast('Failed to start direct message', 'error');
     }
   };
 
@@ -813,6 +1056,11 @@ export const ChatDashboard = ({ user }: { user: any }) => {
         }));
         
         setMessages(messagesWithProfiles);
+
+        // Mark as read if it's a DM and we're the recipient
+        if (activeRoom?.is_direct) {
+          markMessagesAsRead(roomId);
+        }
       }
     } catch (error: any) {
       console.error('Error fetching messages:', error);
@@ -1339,6 +1587,18 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                   </button>
                 </div>
 
+                {/* Sort Section */}
+                <div className="px-3 py-2 flex items-center justify-between">
+                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em]">Sort By</span>
+                  <button 
+                    onClick={() => setSortBy(prev => prev === 'newest' ? 'unread' : 'newest')}
+                    className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-slate-800/50 text-[10px] font-bold text-indigo-400 hover:bg-slate-800 transition-all border border-indigo-500/20"
+                  >
+                    <Filter className="w-3 h-3" />
+                    <span className="uppercase">{sortBy === 'unread' ? 'Unread First' : 'Newest First'}</span>
+                  </button>
+                </div>
+
                 {/* Navigation Section */}
                 <div className="space-y-1">
                   <div className="px-3 py-2 text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em]">
@@ -1365,7 +1625,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                     <span className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em]">Rooms</span>
                   </div>
                   <div className="space-y-1">
-                    {rooms.map((room) => (
+                    {groupRooms.map((room) => (
                       <button
                         key={room.id}
                         onClick={() => {
@@ -1384,7 +1644,60 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                           activeRoom?.id === room.id ? "text-indigo-400" : "text-slate-500 group-hover:text-slate-400"
                         )} />
                         <span className="font-medium truncate">{room.name}</span>
-                        {activeRoom?.id === room.id && (
+                        {room.unread_count && room.unread_count > 0 ? (
+                          <div className="ml-auto bg-indigo-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center shadow-lg shadow-indigo-500/20">
+                            {room.unread_count}
+                          </div>
+                        ) : activeRoom?.id === room.id && (
+                          <motion.div 
+                            layoutId="activeRoomMobile"
+                            className="absolute left-0 w-1 h-6 bg-indigo-500 rounded-r-full"
+                          />
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Direct Messages Section */}
+                <div className="space-y-1">
+                  <div className="px-3 py-2 flex items-center justify-between group">
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em]">Direct Messages</span>
+                  </div>
+                  <div className="space-y-1">
+                    {directMessages.map((dm) => (
+                      <button
+                        key={dm.id}
+                        onClick={() => {
+                          setActiveRoom(dm);
+                          setIsMobileMenuOpen(false);
+                        }}
+                        className={cn(
+                          "w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all group relative",
+                          activeRoom?.id === dm.id 
+                            ? "bg-indigo-500/10 text-indigo-400" 
+                            : "text-slate-400 hover:bg-slate-800/50 hover:text-slate-200"
+                        )}
+                      >
+                        <div className="relative">
+                          <div className="w-6 h-6 rounded-lg bg-slate-800 flex items-center justify-center text-[10px] font-bold overflow-hidden">
+                            {dm.other_user_profile?.avatar_url ? (
+                              <img src={dm.other_user_profile.avatar_url} alt="" className="w-full h-full object-cover" />
+                            ) : (
+                              dm.other_user_profile?.username?.[0]?.toUpperCase() || '?'
+                            )}
+                          </div>
+                          <div className={cn(
+                            "absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full border border-slate-900",
+                            onlineUsers.has(dm.other_user_profile?.id || '') ? "bg-emerald-500" : "bg-slate-500"
+                          )} />
+                        </div>
+                        <span className="font-medium truncate">{dm.other_user_profile?.username || 'Unknown'}</span>
+                        {dm.unread_count && dm.unread_count > 0 ? (
+                          <div className="ml-auto bg-indigo-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center shadow-lg shadow-indigo-500/20">
+                            {dm.unread_count}
+                          </div>
+                        ) : activeRoom?.id === dm.id && (
                           <motion.div 
                             layoutId="activeRoomMobile"
                             className="absolute left-0 w-1 h-6 bg-indigo-500 rounded-r-full"
@@ -1502,6 +1815,18 @@ export const ChatDashboard = ({ user }: { user: any }) => {
             </div>
           </div>
 
+          {/* Sort Section */}
+          <div className="px-3 py-2 flex items-center justify-between">
+            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em]">Sort By</span>
+            <button 
+              onClick={() => setSortBy(prev => prev === 'newest' ? 'unread' : 'newest')}
+              className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-slate-800/50 text-[10px] font-bold text-indigo-400 hover:bg-slate-800 transition-all border border-indigo-500/20"
+            >
+              <Filter className="w-3 h-3" />
+              <span className="uppercase">{sortBy === 'unread' ? 'Unread First' : 'Newest First'}</span>
+            </button>
+          </div>
+
           {/* Rooms Section */}
           <div className="space-y-1">
             <div className="px-3 py-2 flex items-center justify-between group">
@@ -1514,7 +1839,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
               </button>
             </div>
             <div className="space-y-0.5">
-              {rooms.map((room) => (
+              {groupRooms.map((room) => (
                 <button
                   key={room.id}
                   onClick={() => setActiveRoom(room)}
@@ -1530,7 +1855,11 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                     activeRoom?.id === room.id ? "text-indigo-400" : "text-slate-500 group-hover:text-slate-400"
                   )} />
                   <span className="font-medium truncate">{room.name}</span>
-                  {activeRoom?.id === room.id && (
+                  {room.unread_count && room.unread_count > 0 ? (
+                    <div className="ml-auto bg-indigo-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center shadow-lg shadow-indigo-500/20">
+                      {room.unread_count}
+                    </div>
+                  ) : activeRoom?.id === room.id && (
                     <motion.div 
                       layoutId="activeRoomDesktop"
                       className="absolute left-0 w-1 h-6 bg-indigo-500 rounded-r-full"
@@ -1538,10 +1867,61 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                   )}
                 </button>
               ))}
-              {rooms.length === 0 && !loading && (
+              {groupRooms.length === 0 && !loading && (
                 <div className="px-3 py-8 text-center space-y-3">
                   <p className="text-sm text-slate-500">No rooms yet</p>
                   <Button variant="outline" size="sm" onClick={() => setShowCreateModal(true)}>Create One</Button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Direct Messages Section */}
+          <div className="space-y-1">
+            <div className="px-3 py-2 flex items-center justify-between group">
+              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Direct Messages</span>
+            </div>
+            <div className="space-y-0.5">
+              {directMessages.map((dm) => (
+                <button
+                  key={dm.id}
+                  onClick={() => setActiveRoom(dm)}
+                  className={cn(
+                    "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all group relative",
+                    activeRoom?.id === dm.id 
+                      ? "bg-indigo-500/10 text-indigo-400" 
+                      : "text-slate-400 hover:bg-slate-800/50 hover:text-slate-200"
+                  )}
+                >
+                  <div className="relative">
+                    <div className="w-5 h-5 rounded-lg bg-slate-800 flex items-center justify-center text-[10px] font-bold overflow-hidden">
+                      {dm.other_user_profile?.avatar_url ? (
+                        <img src={dm.other_user_profile.avatar_url} alt="" className="w-full h-full object-cover" />
+                      ) : (
+                        dm.other_user_profile?.username?.[0]?.toUpperCase() || '?'
+                      )}
+                    </div>
+                    <div className={cn(
+                      "absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full border border-slate-900",
+                      onlineUsers.has(dm.other_user_profile?.id || '') ? "bg-emerald-500" : "bg-slate-500"
+                    )} />
+                  </div>
+                  <span className="font-medium truncate">{dm.other_user_profile?.username || 'Unknown'}</span>
+                  {dm.unread_count && dm.unread_count > 0 ? (
+                    <div className="ml-auto bg-indigo-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center shadow-lg shadow-indigo-500/20">
+                      {dm.unread_count}
+                    </div>
+                  ) : activeRoom?.id === dm.id && (
+                    <motion.div 
+                      layoutId="activeRoomDesktop"
+                      className="absolute left-0 w-1 h-6 bg-indigo-500 rounded-r-full"
+                    />
+                  )}
+                </button>
+              ))}
+              {directMessages.length === 0 && !loading && (
+                <div className="px-3 py-4 text-center">
+                  <p className="text-xs text-slate-500">No direct messages</p>
                 </div>
               )}
             </div>
@@ -1756,99 +2136,123 @@ export const ChatDashboard = ({ user }: { user: any }) => {
             {/* Desktop Header */}
             <header className="hidden lg:flex h-16 px-6 border-b border-slate-200 dark:border-white/5 items-center justify-between bg-white/50 dark:bg-[#020617]/50 backdrop-blur-md z-10 transition-colors duration-300">
               <div className="flex items-center gap-3 min-w-0">
-                <Hash className="w-5 h-5 text-slate-500 flex-shrink-0" />
+                {activeRoom.is_direct ? (
+                  <div className="relative">
+                    <div className="w-10 h-10 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-indigo-400 font-bold overflow-hidden">
+                      {activeRoom.other_user_profile?.avatar_url ? (
+                        <img src={activeRoom.other_user_profile.avatar_url} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                      ) : (
+                        activeRoom.other_user_profile?.username?.[0]?.toUpperCase() || '?'
+                      )}
+                    </div>
+                    <div className={cn(
+                      "absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-white dark:border-[#020617]",
+                      onlineUsers.has(activeRoom.other_user_profile?.id || '') ? "bg-emerald-500" : "bg-slate-400"
+                    )} />
+                  </div>
+                ) : (
+                  <Hash className="w-5 h-5 text-slate-500 flex-shrink-0" />
+                )}
                 <div className="min-w-0">
-                  <h2 className="font-bold text-slate-900 dark:text-white truncate">{activeRoom.name}</h2>
-                  <div className="flex items-center gap-2">
-                    <div className="flex items-center gap-2 bg-slate-100 dark:bg-slate-800/50 px-2.5 py-1 rounded-xl border border-slate-200 dark:border-white/5">
-                      <p className="text-xs text-slate-600 dark:text-slate-400 truncate font-medium">Code: <span className="font-mono text-indigo-600 dark:text-indigo-400">{activeRoom.code}</span></p>
+                  <h2 className="font-bold text-slate-900 dark:text-white truncate">
+                    {activeRoom.is_direct ? activeRoom.other_user_profile?.username : activeRoom.name}
+                  </h2>
+                  {!activeRoom.is_direct ? (
+                    <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 bg-slate-100 dark:bg-slate-800/50 px-2.5 py-1 rounded-xl border border-slate-200 dark:border-white/5">
+                        <p className="text-xs text-slate-600 dark:text-slate-400 truncate font-medium">Code: <span className="font-mono text-indigo-600 dark:text-indigo-400">{activeRoom.code}</span></p>
+                        <button 
+                          onClick={() => copyToClipboard(activeRoom.code)}
+                          className="p-1 text-slate-500 hover:text-indigo-400 transition-colors"
+                          title="Copy Room Code"
+                        >
+                          {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                        </button>
+                      </div>
                       <button 
-                        onClick={() => copyToClipboard(activeRoom.code)}
-                        className="p-1 text-slate-500 hover:text-indigo-400 transition-colors"
-                        title="Copy Room Code"
+                        onClick={() => {
+                          const shareText = `Join my room "${activeRoom.name}" on ChitChat! Code: ${activeRoom.code}`;
+                          navigator.clipboard.writeText(shareText);
+                          setCopied(true);
+                          showToast('Share message copied!');
+                          setTimeout(() => setCopied(false), 2000);
+                        }}
+                        className="px-3 py-1 text-slate-500 hover:text-indigo-400 hover:bg-indigo-500/10 rounded-lg transition-all flex items-center gap-1.5"
+                        title="Copy Share Message"
                       >
-                        {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                        <span className="text-[10px] font-bold uppercase tracking-wider hidden sm:inline">Share</span>
                       </button>
                     </div>
-                    <button 
-                      onClick={() => {
-                        const shareText = `Join my room "${activeRoom.name}" on ChitChat! Code: ${activeRoom.code}`;
-                        navigator.clipboard.writeText(shareText);
-                        setCopied(true);
-                        showToast('Share message copied!');
-                        setTimeout(() => setCopied(false), 2000);
-                      }}
-                      className="px-3 py-1 text-slate-500 hover:text-indigo-400 hover:bg-indigo-500/10 rounded-lg transition-all flex items-center gap-1.5"
-                      title="Copy Share Message"
-                    >
-                      <span className="text-[10px] font-bold uppercase tracking-wider hidden sm:inline">Share</span>
-                    </button>
-                  </div>
+                  ) : (
+                    <p className="text-xs text-slate-500 truncate">{activeRoom.other_user_profile?.status || 'Direct Message'}</p>
+                  )}
                 </div>
               </div>
-              <div className="flex items-center gap-2">
-                <div className={cn(
-                  "flex items-center transition-all duration-300 overflow-hidden",
-                  showSearch ? "w-48 sm:w-64 opacity-100" : "w-0 opacity-0"
-                )}>
-                  <div className="relative w-full">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
-                    <input
-                      type="text"
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      placeholder="Search messages..."
-                      className="w-full bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-white/5 rounded-xl pl-9 pr-4 py-1.5 text-xs text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500/50 placeholder:text-slate-400 dark:placeholder:text-slate-600"
-                    />
-                    {searchQuery && (
-                      <button 
-                        onClick={() => setSearchQuery('')}
-                        className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-500 hover:text-slate-300"
-                      >
-                        <X className="w-3 h-3" />
-                      </button>
+                <div className="flex items-center gap-2">
+                  <div className={cn(
+                    "flex items-center transition-all duration-300 overflow-hidden",
+                    showSearch ? "w-48 sm:w-64 opacity-100" : "w-0 opacity-0"
+                  )}>
+                    <div className="relative w-full">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
+                      <input
+                        type="text"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        placeholder="Search messages..."
+                        className="w-full bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-white/5 rounded-xl pl-9 pr-4 py-1.5 text-xs text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500/50 placeholder:text-slate-400 dark:placeholder:text-slate-600"
+                      />
+                      {searchQuery && (
+                        <button 
+                          onClick={() => setSearchQuery('')}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-500 hover:text-slate-300"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <Button 
+                    variant="ghost" 
+                    size="icon" 
+                    onClick={() => {
+                      setShowSearch(!showSearch);
+                      if (showSearch) setSearchQuery('');
+                    }}
+                    className={cn(
+                      showSearch ? 'text-indigo-400 bg-indigo-500/10' : ''
                     )}
-                  </div>
+                  >
+                    <Search className="w-5 h-5" />
+                  </Button>
+                  <Button 
+                    variant="ghost" 
+                    size="icon" 
+                    onClick={() => setShowMembers(!showMembers)}
+                    className={cn(
+                      showMembers ? 'text-indigo-400 bg-indigo-500/10' : ''
+                    )}
+                  >
+                    <User className="w-5 h-5" />
+                  </Button>
+                  {!activeRoom.is_direct && (
+                    <Button 
+                      variant="ghost" 
+                      size="icon" 
+                      onClick={() => {
+                        setEditRoomName(activeRoom.name);
+                        setShowRoomSettingsModal(true);
+                      }}
+                      className={cn(
+                        activeRoom.created_by !== user.id ? 'opacity-50 cursor-not-allowed' : ''
+                      )}
+                      disabled={activeRoom.created_by !== user.id}
+                      title={activeRoom.created_by !== user.id ? "Only the owner can change settings" : "Room Settings"}
+                    >
+                      <Settings className="w-5 h-5" />
+                    </Button>
+                  )}
                 </div>
-                <Button 
-                  variant="ghost" 
-                  size="icon" 
-                  onClick={() => {
-                    setShowSearch(!showSearch);
-                    if (showSearch) setSearchQuery('');
-                  }}
-                  className={cn(
-                    showSearch ? 'text-indigo-400 bg-indigo-500/10' : ''
-                  )}
-                >
-                  <Search className="w-5 h-5" />
-                </Button>
-                <Button 
-                  variant="ghost" 
-                  size="icon" 
-                  onClick={() => setShowMembers(!showMembers)}
-                  className={cn(
-                    showMembers ? 'text-indigo-400 bg-indigo-500/10' : ''
-                  )}
-                >
-                  <User className="w-5 h-5" />
-                </Button>
-                <Button 
-                  variant="ghost" 
-                  size="icon" 
-                  onClick={() => {
-                    setEditRoomName(activeRoom.name);
-                    setShowRoomSettingsModal(true);
-                  }}
-                  className={cn(
-                    activeRoom.created_by !== user.id ? 'opacity-50 cursor-not-allowed' : ''
-                  )}
-                  disabled={activeRoom.created_by !== user.id}
-                  title={activeRoom.created_by !== user.id ? "Only the owner can change settings" : "Room Settings"}
-                >
-                  <Settings className="w-5 h-5" />
-                </Button>
-              </div>
             </header>
 
             {/* Messages */}
@@ -1965,6 +2369,15 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                             <span className="text-[10px] text-slate-400 dark:text-slate-500 uppercase tracking-widest">
                               {format(new Date(msg.created_at), 'HH:mm')}
                             </span>
+                            {isMe && activeRoom?.is_direct && (
+                              <div className="flex items-center ml-1">
+                                {msg.is_read ? (
+                                  <CheckCheck className="w-3 h-3 text-indigo-400" />
+                                ) : (
+                                  <Check className="w-3 h-3 text-slate-500" />
+                                )}
+                              </div>
+                            )}
                           </div>
                         )}
 
@@ -2286,7 +2699,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                         setNewMessage(e.target.value);
                         handleTyping();
                       }}
-                      placeholder={`Message #${activeRoom.name}`}
+                      placeholder={activeRoom.is_direct ? `Message @${activeRoom.other_user_profile?.username}` : `Message #${activeRoom.name}`}
                       disabled={isRecording}
                       className="w-full bg-slate-100 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl pl-24 pr-12 py-4 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all placeholder:text-slate-400 dark:placeholder:text-slate-600 shadow-2xl disabled:opacity-50"
                     />
@@ -2341,7 +2754,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
           >
             <div className="p-6">
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                <h3 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
                   Members — {members.length}
                 </h3>
                 <button onClick={() => setShowMembers(false)} className="lg:hidden text-slate-500 hover:text-white">
@@ -2376,16 +2789,29 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                           <span className="text-[9px] text-amber-500 font-bold uppercase tracking-widest">Owner</span>
                         )}
                         {member.status && (
-                          <span className="text-[10px] text-slate-500 italic truncate max-w-[120px]">{member.status}</span>
+                          <span className="text-[10px] text-slate-500 dark:text-slate-400 italic truncate max-w-[120px]">{member.status}</span>
                         )}
                       </div>
                     </div>
-                    <div className={cn(
-                      "w-2 h-2 rounded-full transition-all duration-300",
-                      onlineUsers.has(member.id) 
-                        ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" 
-                        : "bg-slate-600"
-                    )} title={onlineUsers.has(member.id) ? "Online" : "Offline"} />
+                    <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                      {member.id !== user.id && (
+                        <Button 
+                          variant="ghost" 
+                          size="icon" 
+                          className="w-8 h-8 text-indigo-400 hover:bg-indigo-500/10"
+                          onClick={() => handleStartDM(member)}
+                          title={`Message ${member.username}`}
+                        >
+                          <Send className="w-4 h-4" />
+                        </Button>
+                      )}
+                      <div className={cn(
+                        "w-2 h-2 rounded-full transition-all duration-300",
+                        onlineUsers.has(member.id) 
+                          ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" 
+                          : "bg-slate-600"
+                      )} title={onlineUsers.has(member.id) ? "Online" : "Offline"} />
+                    </div>
                   </div>
                 ))}
               </div>
@@ -2443,18 +2869,66 @@ export const ChatDashboard = ({ user }: { user: any }) => {
         )}
 
         {showProfileModal && (
-          <Modal title="Edit Profile" onClose={() => {
+          <Modal title={isCropping ? "Crop Avatar" : "Edit Profile"} onClose={() => {
             setShowProfileModal(false);
             setAvatarFile(null);
             setAvatarPreview(null);
+            setIsCropping(false);
+            setImageToCrop(null);
           }}>
-            <form 
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (editUsername.trim()) handleUpdateProfile();
-              }} 
-              className="space-y-6"
-            >
+            {isCropping && imageToCrop ? (
+              <div className="space-y-6">
+                <div className="relative h-64 w-full bg-slate-900 rounded-xl overflow-hidden">
+                  <Cropper
+                    image={imageToCrop}
+                    crop={crop}
+                    zoom={zoom}
+                    aspect={1}
+                    onCropChange={setCrop}
+                    onCropComplete={onCropComplete}
+                    onZoomChange={setZoom}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+                    <span>Zoom</span>
+                    <span>{Math.round(zoom * 100)}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    value={zoom}
+                    min={1}
+                    max={3}
+                    step={0.1}
+                    aria-labelledby="Zoom"
+                    onChange={(e) => setZoom(Number(e.target.value))}
+                    className="w-full h-1.5 bg-slate-200 dark:bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                  />
+                </div>
+                <div className="flex gap-3">
+                  <Button 
+                    variant="outline" 
+                    className="flex-1" 
+                    onClick={() => {
+                      setIsCropping(false);
+                      setImageToCrop(null);
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                  <Button className="flex-1" onClick={handleCropSave}>
+                    Apply Crop
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <form 
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (editUsername.trim()) handleUpdateProfile();
+                }} 
+                className="space-y-6"
+              >
               <div className="flex flex-col items-center gap-4">
                 <div className="relative group">
                   <div className="w-24 h-24 rounded-3xl bg-slate-800 border-2 border-indigo-500/30 flex items-center justify-center text-4xl text-indigo-400 font-bold overflow-hidden shadow-xl">
@@ -2484,21 +2958,19 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                             return;
                           }
 
-                          try {
-                            const compressed = await compressImage(file);
-                            setAvatarFile(compressed);
-                            setAvatarFileName(file.name);
-                            setAvatarPreview(URL.createObjectURL(compressed));
-                          } catch (error) {
-                            console.error('Compression error:', error);
-                            showToast('Failed to process image', 'error');
-                          }
+                          setAvatarFileName(file.name);
+                          const reader = new FileReader();
+                          reader.addEventListener('load', () => {
+                            setImageToCrop(reader.result as string);
+                            setIsCropping(true);
+                          });
+                          reader.readAsDataURL(file);
                         }
                       }}
                     />
                   </label>
                 </div>
-                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Click to change avatar</p>
+                <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">Click to change avatar</p>
               </div>
 
               <Input 
@@ -2515,7 +2987,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
               />
 
               <div className="pt-4 border-t border-slate-100 dark:border-white/5">
-                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-3">Notifications</p>
+                <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-3">Notifications</p>
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
@@ -2527,7 +2999,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                       </div>
                       <div>
                         <p className="text-sm font-medium text-slate-700 dark:text-slate-200">Global Notifications</p>
-                        <p className="text-[10px] text-slate-500">Enable or disable all alerts</p>
+                        <p className="text-[10px] text-slate-500 dark:text-slate-400">Enable or disable all alerts</p>
                       </div>
                     </div>
                     <button
@@ -2546,7 +3018,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                   </div>
 
                   <div className="space-y-2">
-                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                    <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest flex items-center gap-2">
                       <Volume2 className="w-3 h-3" /> Notification Sound
                     </label>
                     <div className="grid grid-cols-2 gap-2">
@@ -2599,6 +3071,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                 <Button type="button" variant="ghost" className="w-full" onClick={() => setShowProfileModal(false)}>Cancel</Button>
               </div>
             </form>
+            )}
           </Modal>
         )}
 
@@ -2627,7 +3100,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                   />
 
                   <div className="pt-4 border-t border-slate-100 dark:border-white/5">
-                    <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-3">Room Notifications</p>
+                    <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-3">Room Notifications</p>
                     <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5">
                       <div className="flex items-center gap-3">
                         <div className={cn(
@@ -2640,7 +3113,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                           <p className="text-sm font-medium text-slate-700 dark:text-slate-200">
                             {mutedRooms.has(activeRoom.id) ? 'Muted' : 'Active'}
                           </p>
-                          <p className="text-[10px] text-slate-500">
+                          <p className="text-[10px] text-slate-500 dark:text-slate-400">
                             {mutedRooms.has(activeRoom.id) ? 'You won\'t receive alerts for this room' : 'You will receive alerts for this room'}
                           </p>
                         </div>
@@ -2790,7 +3263,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                   )}
 
                   <div className="px-4 py-2 border-t border-slate-100 dark:border-white/5">
-                    <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">React</p>
+                    <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-2">React</p>
                     <div className="grid grid-cols-4 gap-1">
                       {COMMON_EMOJIS.map(emoji => (
                         <button

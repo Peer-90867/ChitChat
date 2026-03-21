@@ -8,10 +8,14 @@ export interface Profile {
 
 export interface Room {
   id: string;
-  name: string;
-  code: string;
+  name?: string;
+  code?: string;
+  is_direct?: boolean;
   created_by: string;
   created_at: string;
+  other_user_profile?: Profile; // Virtual property for DMs
+  unread_count?: number; // Virtual property
+  last_message_at?: string; // Virtual property
 }
 
 export interface Reaction {
@@ -40,6 +44,7 @@ export interface Message {
   };
   created_at: string;
   updated_at?: string;
+  is_read?: boolean;
   profiles?: Profile;
   reactions?: Reaction[];
 }

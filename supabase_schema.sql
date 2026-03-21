@@ -13,8 +13,9 @@ CREATE TABLE IF NOT EXISTS profiles (
 -- 2. Rooms Table
 CREATE TABLE IF NOT EXISTS rooms (
   id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
-  name TEXT NOT NULL,
-  code TEXT UNIQUE NOT NULL,
+  name TEXT,
+  code TEXT UNIQUE,
+  is_direct BOOLEAN DEFAULT FALSE,
   created_by UUID REFERENCES auth.users(id) ON DELETE CASCADE,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW())
 );
@@ -38,6 +39,7 @@ CREATE TABLE IF NOT EXISTS messages (
   audio_url TEXT,
   reply_to_id UUID REFERENCES messages(id) ON DELETE SET NULL,
   is_pinned BOOLEAN DEFAULT FALSE,
+  is_read BOOLEAN DEFAULT FALSE,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW())
 );
 
