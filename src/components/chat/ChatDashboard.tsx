@@ -88,6 +88,10 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const [copied, setCopied] = useState(false);
   const [showMobileRoomMenu, setShowMobileRoomMenu] = useState(false);
   const [showMembers, setShowMembers] = useState(false);
+  const [showNewDMModal, setShowNewDMModal] = useState(false);
+  const [dmSearchQuery, setDmSearchQuery] = useState('');
+  const [dmSearchResults, setDmSearchResults] = useState<Profile[]>([]);
+  const [isSearchingDMs, setIsSearchingDMs] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [newRoomName, setNewRoomName] = useState('');
   const [editRoomName, setEditRoomName] = useState('');
@@ -117,6 +121,9 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; messageId: string } | null>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [hasUnread, setHasUnread] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const MESSAGES_PER_PAGE = 30;
 
   const groupRooms = rooms.filter(r => !r.is_direct);
   const directMessages = rooms.filter(r => r.is_direct);
@@ -261,6 +268,18 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   }, []);
 
   useEffect(() => {
+    const timer = setTimeout(() => {
+      if (dmSearchQuery) {
+        searchUsers(dmSearchQuery);
+      } else {
+        setDmSearchResults([]);
+      }
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [dmSearchQuery]);
+
+  useEffect(() => {
     if (user) {
       fetchRooms();
     }
@@ -283,6 +302,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
       setMembers([]);
       setIsAtBottom(true);
       setHasUnread(false);
+      setHasMore(true);
       fetchMessages(activeRoom.id);
       fetchMembers(activeRoom.id);
       
@@ -576,12 +596,24 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const handleScroll = () => {
     if (!messagesContainerRef.current) return;
     const { scrollTop, scrollHeight, clientHeight } = messagesContainerRef.current;
+    
+    // Detect scroll to top for infinite scrolling
+    if (scrollTop < 100 && hasMore && !isLoadingMore && !searchQuery) {
+      loadMoreMessages();
+    }
+
     // If we are within 50px of the bottom, consider it "at bottom"
     const atBottom = scrollHeight - scrollTop - clientHeight < 50;
     setIsAtBottom(atBottom);
     if (atBottom) {
       setHasUnread(false);
     }
+  };
+
+  const loadMoreMessages = () => {
+    if (!activeRoom || !hasMore || isLoadingMore || messages.length === 0) return;
+    const firstMessage = messages[0];
+    fetchMessages(activeRoom.id, false, firstMessage.created_at);
   };
 
   const fetchProfile = async () => {
@@ -966,6 +998,30 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     }
   };
 
+  const searchUsers = async (query: string) => {
+    if (!query.trim()) {
+      setDmSearchResults([]);
+      return;
+    }
+
+    try {
+      setIsSearchingDMs(true);
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .ilike('username', `%${query}%`)
+        .neq('id', user.id)
+        .limit(10);
+
+      if (error) throw error;
+      setDmSearchResults(data || []);
+    } catch (error: any) {
+      console.error('Error searching users:', error);
+    } finally {
+      setIsSearchingDMs(false);
+    }
+  };
+
   const handleStartDM = async (targetUser: Profile) => {
     if (targetUser.id === user.id) return;
 
@@ -1024,24 +1080,33 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     }
   };
 
-  const fetchMessages = async (roomId: string, isPolling = false) => {
+  const fetchMessages = async (roomId: string, isPolling = false, before?: string) => {
+    if (isLoadingMore && before) return;
+    if (before) setIsLoadingMore(true);
+
     try {
-      const { data: messagesData, error: messagesError } = await supabase
+      let query = supabase
         .from('messages')
         .select(`
           *,
           reactions (*)
         `)
         .eq('room_id', roomId)
-        .order('created_at', { ascending: true });
+        .order('created_at', { ascending: false })
+        .limit(MESSAGES_PER_PAGE);
+
+      if (before) {
+        query = query.lt('created_at', before);
+      }
+
+      const { data: messagesData, error: messagesError } = await query;
       
       if (messagesError) throw messagesError;
       
       if (messagesData) {
-        // Fetch unique user_ids
+        const chronMessages = [...messagesData].reverse();
         const userIds = [...new Set(messagesData.map(m => m.user_id))];
         
-        // Fetch profiles
         const { data: profilesData, error: profilesError } = await supabase
           .from('profiles')
           .select('*')
@@ -1049,26 +1114,57 @@ export const ChatDashboard = ({ user }: { user: any }) => {
           
         if (profilesError) throw profilesError;
         
-        // Map profiles to messages
-        const messagesWithProfiles = messagesData.map(m => ({
+        const messagesWithProfiles = chronMessages.map(m => ({
           ...m,
           profiles: profilesData?.find(p => p.id === m.user_id)
         }));
         
-        setMessages(messagesWithProfiles);
+        if (before) {
+          const container = messagesContainerRef.current;
+          const oldScrollHeight = container?.scrollHeight || 0;
 
-        // Mark as read if it's a DM and we're the recipient
+          setMessages(prev => [...messagesWithProfiles, ...prev]);
+          setHasMore(messagesData.length === MESSAGES_PER_PAGE);
+          
+          setTimeout(() => {
+            if (container) {
+              container.scrollTop = container.scrollHeight - oldScrollHeight;
+            }
+          }, 0);
+        } else {
+          // When polling, we only want to add NEW messages, not replace everything
+          if (isPolling) {
+            setMessages(prev => {
+              const existingIds = new Set(prev.map(m => m.id));
+              const newMessages = messagesWithProfiles.filter(m => !existingIds.has(m.id));
+              if (newMessages.length === 0) return prev;
+              return [...prev, ...newMessages].sort((a, b) => 
+                new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+              );
+            });
+          } else {
+            setMessages(messagesWithProfiles);
+            setHasMore(messagesData.length === MESSAGES_PER_PAGE);
+            
+            setTimeout(() => {
+              if (messagesContainerRef.current) {
+                messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
+              }
+            }, 100);
+          }
+        }
+
         if (activeRoom?.is_direct) {
           markMessagesAsRead(roomId);
         }
       }
     } catch (error: any) {
       console.error('Error fetching messages:', error);
-      // Don't show toast for background polling errors to avoid spamming the user
-      // especially if it's a network error like "Failed to fetch"
       if (!isPolling) {
         showToast(`Failed to load message history: ${error.message || 'Unknown error'}`, 'error');
       }
+    } finally {
+      if (before) setIsLoadingMore(false);
     }
   };
 
@@ -1663,6 +1759,12 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                 <div className="space-y-1">
                   <div className="px-3 py-2 flex items-center justify-between group">
                     <span className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em]">Direct Messages</span>
+                    <button 
+                      onClick={() => setShowNewDMModal(true)}
+                      className="p-1 text-slate-500 hover:text-indigo-400 hover:bg-indigo-500/10 rounded-md transition-all"
+                    >
+                      <Plus className="w-4 h-4" />
+                    </button>
                   </div>
                   <div className="space-y-1">
                     {directMessages.map((dm) => (
@@ -1880,6 +1982,12 @@ export const ChatDashboard = ({ user }: { user: any }) => {
           <div className="space-y-1">
             <div className="px-3 py-2 flex items-center justify-between group">
               <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Direct Messages</span>
+              <button 
+                onClick={() => setShowNewDMModal(true)}
+                className="p-1 text-slate-500 hover:text-indigo-400 hover:bg-indigo-500/10 rounded-md transition-all"
+              >
+                <Plus className="w-4 h-4" />
+              </button>
             </div>
             <div className="space-y-0.5">
               {directMessages.map((dm) => (
@@ -2261,6 +2369,12 @@ export const ChatDashboard = ({ user }: { user: any }) => {
               onScroll={handleScroll}
               className="flex-1 overflow-y-auto p-6 space-y-1 scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800"
             >
+              {isLoadingMore && (
+                <div className="flex justify-center py-4">
+                  <div className="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+                </div>
+              )}
+
               {/* Pinned Messages Section */}
               {messages.some(m => m.is_pinned) && (
                 <div className="mb-8 space-y-2">
@@ -3190,6 +3304,83 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                 <Button variant="ghost" className="flex-1" onClick={() => setMessageToDeleteId(null)}>Cancel</Button>
                 <Button className="flex-1 bg-red-600 hover:bg-red-700" onClick={handleDeleteMessage}>Delete</Button>
               </div>
+            </div>
+          </Modal>
+        )}
+
+        {showNewDMModal && (
+          <Modal title="New Direct Message" onClose={() => {
+            setShowNewDMModal(false);
+            setDmSearchQuery('');
+            setDmSearchResults([]);
+          }}>
+            <div className="space-y-6">
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-widest">Search Users</label>
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                  <Input
+                    placeholder="Search by username..."
+                    value={dmSearchQuery}
+                    onChange={(e) => setDmSearchQuery(e.target.value)}
+                    className="pl-10"
+                    autoFocus
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
+                {isSearchingDMs ? (
+                  <div className="py-8 text-center">
+                    <div className="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
+                    <p className="text-xs text-slate-500">Searching users...</p>
+                  </div>
+                ) : dmSearchResults.length > 0 ? (
+                  dmSearchResults.map((result) => (
+                    <button
+                      key={result.id}
+                      onClick={() => {
+                        handleStartDM(result);
+                        setShowNewDMModal(false);
+                        setDmSearchQuery('');
+                        setDmSearchResults([]);
+                      }}
+                      className="w-full flex items-center gap-3 p-3 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-all group border border-transparent hover:border-slate-200 dark:hover:border-slate-700"
+                    >
+                      <div className="w-10 h-10 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-indigo-400 text-sm font-bold overflow-hidden">
+                        {result.avatar_url ? (
+                          <img src={result.avatar_url} alt="Avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                        ) : (
+                          result.username?.[0]?.toUpperCase() || '?'
+                        )}
+                      </div>
+                      <div className="flex flex-col items-start">
+                        <span className="text-sm font-semibold text-slate-700 dark:text-slate-200 group-hover:text-indigo-400 transition-colors">
+                          {result.username}
+                        </span>
+                        {result.status && (
+                          <span className="text-[10px] text-slate-500 italic truncate max-w-[180px]">
+                            {result.status}
+                          </span>
+                        )}
+                      </div>
+                      <div className="ml-auto opacity-0 group-hover:opacity-100 transition-opacity">
+                        <Send className="w-4 h-4 text-indigo-500" />
+                      </div>
+                    </button>
+                  ))
+                ) : dmSearchQuery ? (
+                  <div className="py-8 text-center">
+                    <p className="text-sm text-slate-500">No users found matching "{dmSearchQuery}"</p>
+                  </div>
+                ) : (
+                  <div className="py-8 text-center">
+                    <p className="text-sm text-slate-500 italic">Type a username to find people to message</p>
+                  </div>
+                )}
+              </div>
+
+              <Button variant="ghost" className="w-full" onClick={() => setShowNewDMModal(false)}>Cancel</Button>
             </div>
           </Modal>
         )}
