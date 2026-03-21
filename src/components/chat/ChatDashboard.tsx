@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useInView } from 'react-intersection-observer';
 import { supabase, hasValidSupabase } from '@/src/lib/supabase';
 import { Room, Message, Profile } from '@/src/types';
 import { cn } from '@/src/lib/utils';
@@ -46,12 +47,14 @@ import {
   CheckCheck,
   Filter,
   Reply,
-  CornerUpLeft
+  CornerUpLeft,
+  Palette,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
 import ReactMarkdown from 'react-markdown';
 import { customAlphabet } from 'nanoid';
+import EmojiPicker, { Theme as EmojiTheme } from 'emoji-picker-react';
 import { Toast } from '../ui/Toast';
 import { fetchLinkPreview } from '@/src/services/geminiService';
 import { LinkPreview } from './LinkPreview';
@@ -62,6 +65,23 @@ import Cropper, { Area, Point } from 'react-easy-crop';
 import getCroppedImg from '@/src/lib/cropImage';
 
 const generateRoomCode = customAlphabet('123456789ABCDEFGHJKLMNPQRSTUVWXYZ', 6);
+
+const HighlightedText = ({ children, query }: { children: string; query: string }) => {
+  if (!query.trim()) return <>{children}</>;
+  const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const parts = children.split(new RegExp(`(${escapedQuery})`, 'gi'));
+  return (
+    <>
+      {parts.map((part, i) =>
+        part.toLowerCase() === query.toLowerCase() ? (
+          <mark key={i} className="bg-yellow-200 dark:bg-yellow-800 text-inherit rounded px-0.5">{part}</mark>
+        ) : (
+          part
+        )
+      )}
+    </>
+  );
+};
 
 export const ChatDashboard = ({ user }: { user: any }) => {
   const { theme, toggleTheme } = useTheme();
@@ -108,8 +128,11 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
   const [typingUsers, setTypingUsers] = useState<Set<string>>(new Set());
   const [activeEmojiPicker, setActiveEmojiPicker] = useState<string | null>(null);
+  const [showFullEmojiPicker, setShowFullEmojiPicker] = useState<string | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editMessageContent, setEditMessageContent] = useState('');
+  const [pendingEditMessageId, setPendingEditMessageId] = useState<string | null>(null);
+  const [showEditConfirmation, setShowEditConfirmation] = useState(false);
   const [avatarFile, setAvatarFile] = useState<Blob | null>(null);
   const [avatarFileName, setAvatarFileName] = useState<string>('');
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
@@ -121,6 +144,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
   const [messageToDeleteId, setMessageToDeleteId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; messageId: string } | null>(null);
+  const [roomContextMenu, setRoomContextMenu] = useState<{ x: number; y: number; roomId: string } | null>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [hasUnread, setHasUnread] = useState(false);
   const [hasMore, setHasMore] = useState(true);
@@ -153,6 +177,12 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const [notificationSound, setNotificationSound] = useState<string>(() => {
     return localStorage.getItem('notificationSound') || 'pop';
   });
+  const [chatTheme, setChatTheme] = useState<string>(() => {
+    return localStorage.getItem('chatTheme') || 'default';
+  });
+  const [chatWallpaper, setChatWallpaper] = useState<string>(() => {
+    return localStorage.getItem('chatWallpaper') || '';
+  });
 
   useEffect(() => {
     localStorage.setItem('globalNotificationsEnabled', JSON.stringify(globalNotificationsEnabled));
@@ -173,6 +203,14 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   useEffect(() => {
     localStorage.setItem('notificationSound', notificationSound);
   }, [notificationSound]);
+
+  useEffect(() => {
+    localStorage.setItem('chatTheme', chatTheme);
+  }, [chatTheme]);
+
+  useEffect(() => {
+    localStorage.setItem('chatWallpaper', chatWallpaper);
+  }, [chatWallpaper]);
 
   const NOTIFICATION_SOUNDS = {
     none: null,
@@ -260,12 +298,23 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
   const [audioChunks, setAudioChunks] = useState<Blob[]>([]);
   const [isUploadingVoice, setIsUploadingVoice] = useState(false);
+  const [isUploadingFile, setIsUploadingFile] = useState(false);
+  const [showMentions, setShowMentions] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState('');
+  const [mentionIndex, setMentionIndex] = useState(0);
   const recordingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const [playingAudioId, setPlayingAudioId] = useState<string | null>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const activeChannelRef = useRef<any>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const { ref, inView } = useInView();
+
+  useEffect(() => {
+    if (inView) {
+      loadMoreMessages();
+    }
+  }, [inView]);
 
   const COMMON_EMOJIS = ['👍', '❤️', '🔥', '😂', '😮', '😢', '🙏', '✅', '👀', '✨', '🎉', '💯', '🚀', '🤔', '👏', '🙌'];
 
@@ -309,8 +358,14 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   }, [sortBy]);
 
   useEffect(() => {
-    const handleClick = () => setContextMenu(null);
-    const handleScroll = () => setContextMenu(null);
+    const handleClick = () => {
+      setContextMenu(null);
+      setRoomContextMenu(null);
+    };
+    const handleScroll = () => {
+      setContextMenu(null);
+      setRoomContextMenu(null);
+    };
     window.addEventListener('click', handleClick);
     window.addEventListener('scroll', handleScroll, true);
     return () => {
@@ -630,11 +685,6 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     if (!messagesContainerRef.current) return;
     const { scrollTop, scrollHeight, clientHeight } = messagesContainerRef.current;
     
-    // Detect scroll to top for infinite scrolling
-    if (scrollTop < 100 && hasMore && !isLoadingMore && !searchQuery) {
-      loadMoreMessages();
-    }
-
     // If we are within 50px of the bottom, consider it "at bottom"
     const atBottom = scrollHeight - scrollTop - clientHeight < 50;
     setIsAtBottom(atBottom);
@@ -823,7 +873,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   };
 
   const markMessagesAsRead = async (roomId: string) => {
-    if (!user || !activeRoom?.is_direct) return;
+    if (!user || !activeRoom?.is_direct || !document.hasFocus()) return;
 
     const { error } = await supabase
       .from('messages')
@@ -839,6 +889,38 @@ export const ChatDashboard = ({ user }: { user: any }) => {
       setRooms(prev => prev.map(r => r.id === roomId ? { ...r, unread_count: 0 } : r));
     }
   };
+
+  const markRoomAsUnread = async (roomId: string) => {
+    const { data: latestMessage, error } = await supabase
+      .from('messages')
+      .select('id')
+      .eq('room_id', roomId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+
+    if (error || !latestMessage) return;
+
+    const { error: updateError } = await supabase
+      .from('messages')
+      .update({ is_read: false })
+      .eq('id', latestMessage.id);
+
+    if (!updateError) {
+      setRooms(prev => prev.map(r => r.id === roomId ? { ...r, unread_count: (r.unread_count || 0) + 1 } : r));
+    }
+  };
+
+  useEffect(() => {
+    const handleFocus = () => {
+      if (activeRoom?.is_direct) {
+        markMessagesAsRead(activeRoom.id);
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
+  }, [activeRoom, user]);
 
   const handleEditMessage = async (messageId: string) => {
     if (!editMessageContent.trim()) return;
@@ -864,6 +946,31 @@ export const ChatDashboard = ({ user }: { user: any }) => {
       showToast('Message edited successfully!');
     } else {
       showToast(error.message, 'error');
+    }
+  };
+
+  const addReaction = async (messageId: string, emoji: string) => {
+    const { error } = await supabase
+      .from('reactions')
+      .insert({
+        message_id: messageId,
+        user_id: user.id,
+        emoji
+      });
+
+    if (error) {
+      showToast('Failed to add reaction', 'error');
+    }
+  };
+
+  const removeReaction = async (reactionId: string) => {
+    const { error } = await supabase
+      .from('reactions')
+      .delete()
+      .eq('id', reactionId);
+
+    if (error) {
+      showToast('Failed to remove reaction', 'error');
     }
   };
 
@@ -1532,6 +1639,45 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     }
   };
 
+  const handleMessageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    setNewMessage(val);
+    handleTyping();
+
+    const lastWord = val.split(' ').pop();
+    if (lastWord?.startsWith('@')) {
+      setShowMentions(true);
+      setMentionQuery(lastWord.slice(1).toLowerCase());
+      setMentionIndex(0);
+    } else {
+      setShowMentions(false);
+    }
+  };
+
+  const handleInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (showMentions) {
+      const filteredMembers = members.filter(m => m.username?.toLowerCase().includes(mentionQuery));
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setMentionIndex(prev => (prev + 1) % filteredMembers.length);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setMentionIndex(prev => (prev - 1 + filteredMembers.length) % filteredMembers.length);
+      } else if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        const member = filteredMembers[mentionIndex];
+        if (member) {
+          const words = newMessage.split(' ');
+          words.pop();
+          setNewMessage([...words, `@${member.username} `].join(' '));
+          setShowMentions(false);
+        }
+      } else if (e.key === 'Escape') {
+        setShowMentions(false);
+      }
+    }
+  };
+
   const handleImageUpload = async (file: File) => {
     if (!activeRoom || !user) return;
 
@@ -1557,13 +1703,47 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     }
   };
 
-  const handleSendMessage = async (content: string = newMessage, audioUrl?: string, imageUrl?: string) => {
+  const handleFileUpload = async (file: File) => {
+    if (!activeRoom || !user) return;
+
+    // Max file size 10MB
+    if (file.size > 10 * 1024 * 1024) {
+      showToast('File size must be less than 10MB', 'error');
+      return;
+    }
+
+    setIsUploadingFile(true);
+    try {
+      const fileExt = file.name.split('.').pop();
+      const fileName = `${user.id}/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.]/g, '_')}`;
+      const filePath = `chat_files/${fileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from('avatars') // Reusing avatars bucket for simplicity
+        .upload(filePath, file);
+
+      if (uploadError) throw uploadError;
+
+      const { data: { publicUrl } } = supabase.storage
+        .from('avatars')
+        .getPublicUrl(filePath);
+
+      await handleSendMessage('', undefined, undefined, publicUrl, file.name, file.size, file.type);
+    } catch (error: any) {
+      console.error('Error uploading file:', error);
+      showToast('Failed to upload file', 'error');
+    } finally {
+      setIsUploadingFile(false);
+    }
+  };
+
+  const handleSendMessage = async (content: string = newMessage, audioUrl?: string, imageUrl?: string, fileUrl?: string, fileName?: string, fileSize?: number, fileType?: string) => {
     const textContent = typeof content === 'string' ? content : newMessage;
-    if (!textContent.trim() && !audioUrl && !imageUrl) return;
+    if (!textContent.trim() && !audioUrl && !imageUrl && !fileUrl) return;
     if (!activeRoom) return;
 
     const currentReplyTo = replyingTo;
-    if (!audioUrl && !imageUrl) {
+    if (!audioUrl && !imageUrl && !fileUrl) {
       setNewMessage('');
       setReplyingTo(null);
     }
@@ -1579,6 +1759,10 @@ export const ChatDashboard = ({ user }: { user: any }) => {
           content: textContent,
           audio_url: audioUrl,
           image_url: imageUrl,
+          file_url: fileUrl,
+          file_name: fileName,
+          file_size: fileSize,
+          file_type: fileType,
           reply_to_id: currentReplyTo?.id
         }])
         .select()
@@ -1743,6 +1927,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                       setShowJoinModal(true);
                       setIsMobileMenuOpen(false);
                     }}
+                    aria-label="Join room"
                     className="flex flex-col items-center justify-center gap-2 p-4 rounded-2xl bg-slate-800 border border-slate-700 text-slate-400 hover:bg-slate-700 hover:text-slate-200 transition-all group"
                   >
                     <Search className="w-6 h-6 group-hover:scale-110 transition-transform" />
@@ -1755,6 +1940,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                   <span className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em]">Sort By</span>
                   <button 
                     onClick={() => setSortBy(prev => prev === 'newest' ? 'unread' : 'newest')}
+                    aria-label={`Sort by ${sortBy === 'unread' ? 'newest' : 'unread'}`}
                     className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-slate-800/50 text-[10px] font-bold text-indigo-400 hover:bg-slate-800 transition-all border border-indigo-500/20"
                   >
                     <Filter className="w-3 h-3" />
@@ -1772,6 +1958,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                       setShowMembers(!showMembers);
                       setIsMobileMenuOpen(false);
                     }}
+                    aria-label="Show members"
                     className={cn(
                       "w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all group",
                       showMembers ? "bg-indigo-500/10 text-indigo-400" : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"
@@ -1794,6 +1981,10 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                         onClick={() => {
                           setActiveRoom(room);
                           setIsMobileMenuOpen(false);
+                        }}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          setRoomContextMenu({ x: e.clientX, y: e.clientY, roomId: room.id });
                         }}
                         className={cn(
                           "w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all group relative",
@@ -1840,6 +2031,10 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                         onClick={() => {
                           setActiveRoom(dm);
                           setIsMobileMenuOpen(false);
+                        }}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          setRoomContextMenu({ x: e.clientX, y: e.clientY, roomId: dm.id });
                         }}
                         className={cn(
                           "w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all group relative",
@@ -2132,7 +2327,20 @@ export const ChatDashboard = ({ user }: { user: any }) => {
       </aside>
 
       {/* Main Chat Area */}
-      <main className="flex-1 flex flex-col bg-white dark:bg-[#020617] w-full min-w-0 relative transition-colors duration-300">
+      <main 
+        className={cn(
+          "flex-1 flex flex-col w-full min-w-0 relative transition-colors duration-300",
+          !chatWallpaper && chatTheme === 'default' && "bg-white dark:bg-[#020617]",
+          !chatWallpaper && chatTheme === 'minimalist' && "bg-slate-50 dark:bg-black",
+          !chatWallpaper && chatTheme === 'dark-blue' && "bg-blue-50 dark:bg-blue-950",
+          !chatWallpaper && chatTheme === 'forest' && "bg-emerald-50 dark:bg-emerald-950"
+        )}
+        style={{
+          backgroundImage: chatWallpaper ? `url(${chatWallpaper})` : undefined,
+          backgroundSize: 'cover',
+          backgroundPosition: 'center'
+        }}
+      >
         {/* Mobile Global Header - Always visible on mobile */}
         <header className="lg:hidden h-16 px-4 border-b border-slate-200 dark:border-white/5 flex items-center justify-between bg-white/50 dark:bg-[#020617]/50 backdrop-blur-md z-30 sticky top-0 transition-colors duration-300">
           <div className="flex items-center gap-3 min-w-0">
@@ -2185,6 +2393,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
               <Button 
                 variant="ghost" 
                 size="icon" 
+                aria-label="Search messages"
                 onClick={() => {
                   setShowSearch(!showSearch);
                   if (showSearch) setSearchQuery('');
@@ -2199,6 +2408,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
               <Button 
                 variant="ghost" 
                 size="icon" 
+                aria-label="Show members"
                 onClick={() => setShowMembers(!showMembers)}
                 className={cn(
                   "text-slate-500 dark:text-slate-400",
@@ -2211,6 +2421,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                 <Button 
                   variant="ghost" 
                   size="icon" 
+                  aria-label="Show room menu"
                   onClick={() => setShowMobileRoomMenu(!showMobileRoomMenu)}
                   className="text-slate-500 dark:text-slate-400"
                 >
@@ -2257,11 +2468,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                             setShowRoomSettingsModal(true);
                             setShowMobileRoomMenu(false);
                           }}
-                          className={cn(
-                            "w-full flex items-center gap-3 px-4 py-2.5 text-sm transition-colors",
-                            activeRoom.created_by === user.id ? "text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800" : "text-slate-400 dark:text-slate-600 cursor-not-allowed"
-                          )}
-                          disabled={activeRoom.created_by !== user.id}
+                          className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
                         >
                           <Settings className="w-4 h-4" />
                           Room Settings
@@ -2293,11 +2500,13 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
                       placeholder="Search messages..."
+                      aria-label="Search messages"
                       className="w-full bg-slate-100 dark:bg-slate-900/50 border border-slate-200 dark:border-white/5 rounded-xl pl-10 pr-10 py-2 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500/50 placeholder:text-slate-400 dark:placeholder:text-slate-600 transition-colors duration-300"
                     />
                     {searchQuery && (
                       <button 
                         onClick={() => setSearchQuery('')}
+                        aria-label="Clear search"
                         className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-slate-500 hover:text-slate-300"
                       >
                         <X className="w-4 h-4" />
@@ -2410,23 +2619,17 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                   >
                     <User className="w-5 h-5" />
                   </Button>
-                  {!activeRoom.is_direct && (
-                    <Button 
-                      variant="ghost" 
-                      size="icon" 
-                      onClick={() => {
-                        setEditRoomName(activeRoom.name);
-                        setShowRoomSettingsModal(true);
-                      }}
-                      className={cn(
-                        activeRoom.created_by !== user.id ? 'opacity-50 cursor-not-allowed' : ''
-                      )}
-                      disabled={activeRoom.created_by !== user.id}
-                      title={activeRoom.created_by !== user.id ? "Only the owner can change settings" : "Room Settings"}
-                    >
-                      <Settings className="w-5 h-5" />
-                    </Button>
-                  )}
+                  <Button 
+                    variant="ghost" 
+                    size="icon" 
+                    onClick={() => {
+                      setEditRoomName(activeRoom.name);
+                      setShowRoomSettingsModal(true);
+                    }}
+                    title="Room Settings"
+                  >
+                    <Settings className="w-5 h-5" />
+                  </Button>
                 </div>
             </header>
 
@@ -2499,6 +2702,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                   </button>
                 </div>
               )}
+              <div ref={ref} className="h-1" />
               <AnimatePresence initial={false}>
                 {filteredMessages.map((msg, index) => {
                   const isMe = msg.user_id === user.id;
@@ -2539,7 +2743,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                         "flex flex-col max-w-[80%]",
                         isMe ? "items-end" : "items-start"
                       )}>
-                        {/* Header: Name & Time - Only show if not grouped */}
+                        {/* Header: Name - Only show if not grouped */}
                         {!shouldGroup && (
                           <div className={cn(
                             "flex items-center gap-2 mb-1 px-1",
@@ -2548,18 +2752,6 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                             <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
                               {isMe ? 'You' : (msg.profiles?.username || 'Unknown')}
                             </span>
-                            <span className="text-[10px] text-slate-400 dark:text-slate-500 uppercase tracking-widest">
-                              {format(new Date(msg.created_at), 'HH:mm')}
-                            </span>
-                            {isMe && activeRoom?.is_direct && (
-                              <div className="flex items-center ml-1">
-                                {msg.is_read ? (
-                                  <CheckCheck className="w-3 h-3 text-indigo-400" />
-                                ) : (
-                                  <Check className="w-3 h-3 text-slate-500" />
-                                )}
-                              </div>
-                            )}
                           </div>
                         )}
 
@@ -2668,11 +2860,66 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                                     />
                                   </div>
                                 )}
+                                {msg.file_url && msg.file_name && (
+                                  <a 
+                                    href={msg.file_url} 
+                                    target="_blank" 
+                                    rel="noopener noreferrer"
+                                    className={cn(
+                                      "flex items-center gap-3 p-3 mb-2 rounded-xl border transition-colors max-w-sm",
+                                      isMe 
+                                        ? "bg-indigo-500/20 border-indigo-400/30 hover:bg-indigo-500/30" 
+                                        : "bg-slate-100 dark:bg-slate-800/50 border-slate-200 dark:border-white/10 hover:bg-slate-200 dark:hover:bg-slate-800"
+                                    )}
+                                  >
+                                    <div className={cn(
+                                      "w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0",
+                                      isMe ? "bg-indigo-400/20 text-indigo-300" : "bg-indigo-500/10 text-indigo-500"
+                                    )}>
+                                      <Paperclip className="w-5 h-5" />
+                                    </div>
+                                    <div className="min-w-0 flex-1">
+                                      <p className={cn("text-sm font-medium truncate", isMe ? "text-white" : "text-slate-900 dark:text-white")}>{msg.file_name}</p>
+                                      <p className={cn("text-xs", isMe ? "text-indigo-200" : "text-slate-500")}>{(msg.file_size || 0) > 1024 * 1024 ? `${((msg.file_size || 0) / (1024 * 1024)).toFixed(2)} MB` : `${Math.round((msg.file_size || 0) / 1024)} KB`}</p>
+                                    </div>
+                                  </a>
+                                )}
                                 {msg.content && (
                                   <div className="markdown-body prose prose-slate dark:prose-invert prose-sm max-w-none">
-                                    <ReactMarkdown>{msg.content}</ReactMarkdown>
+                                    <ReactMarkdown components={{
+                                      text: ({ children }) => {
+                                        const text = Array.isArray(children) ? children.join('') : (children as string);
+                                        return <HighlightedText query={searchQuery}>{text}</HighlightedText>;
+                                      },
+                                    }}>{msg.content}</ReactMarkdown>
                                   </div>
                                 )}
+                                
+                                {/* Reactions Display */}
+                                {msg.reactions && msg.reactions.length > 0 && (
+                                  <div className={cn("flex flex-wrap gap-1 mt-1", isMe ? "justify-end" : "justify-start")}>
+                                    {Object.entries(msg.reactions.reduce((acc: Record<string, string[]>, r) => {
+                                      if (!acc[r.emoji]) acc[r.emoji] = [];
+                                      acc[r.emoji].push(r.id);
+                                      return acc;
+                                    }, {})).map(([emoji, ids]) => (
+                                      <button
+                                        key={emoji}
+                                        onClick={() => handleToggleReaction(msg.id, emoji)}
+                                        className={cn(
+                                          "px-1.5 py-0.5 rounded-full text-xs flex items-center gap-1 transition-all",
+                                          msg.reactions?.some(r => r.emoji === emoji && r.user_id === user.id)
+                                            ? "bg-indigo-500/20 border border-indigo-500/30"
+                                            : "bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600"
+                                        )}
+                                      >
+                                        <span>{emoji}</span>
+                                        <span className="font-bold">{ids.length}</span>
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                                
                                 {msg.updated_at && (
                                   <span className="text-[9px] opacity-50 italic">(edited)</span>
                                 )}
@@ -2681,6 +2928,21 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                                 )}
                               </div>
                             )}
+                            
+                            {/* Message Footer (Time & Read Receipts) */}
+                            <div className={cn(
+                              "flex items-center gap-1 mt-1 text-[10px]",
+                              isMe ? "justify-end text-indigo-200" : "justify-end text-slate-400 dark:text-slate-500"
+                            )}>
+                              <span>{format(new Date(msg.created_at), 'HH:mm')}</span>
+                              {isMe && activeRoom?.is_direct && (
+                                msg.is_read ? (
+                                  <CheckCheck className="w-3 h-3 text-indigo-300" />
+                                ) : (
+                                  <Check className="w-3 h-3 opacity-70" />
+                                )
+                              )}
+                            </div>
                           </div>
 
                           {/* Message Actions Trigger */}
@@ -2706,8 +2968,8 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                             {isMe && !msg.audio_url && (new Date().getTime() - new Date(msg.created_at).getTime()) < 15 * 60 * 1000 && (
                               <button
                                 onClick={() => {
-                                  setEditingMessageId(msg.id);
-                                  setEditMessageContent(msg.content);
+                                  setPendingEditMessageId(msg.id);
+                                  setShowEditConfirmation(true);
                                 }}
                                 className="p-1.5 text-slate-500 hover:text-indigo-400 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition-colors bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm border border-slate-200 dark:border-slate-800"
                                 title="Edit Message"
@@ -2746,11 +3008,48 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                                       {emoji}
                                     </button>
                                   ))}
+                                  <button
+                                    onClick={() => setShowFullEmojiPicker(msg.id)}
+                                    className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors text-slate-500"
+                                    title="More emojis"
+                                  >
+                                    <Plus className="w-5 h-5" />
+                                  </button>
                                 </motion.div>
                               )}
                             </AnimatePresence>
                           </div>
                         </div>
+
+                        {/* Full Emoji Picker Modal */}
+                        <AnimatePresence>
+                          {showFullEmojiPicker === msg.id && (
+                            <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+                              <motion.div 
+                                initial={{ opacity: 0 }}
+                                animate={{ opacity: 1 }}
+                                exit={{ opacity: 0 }}
+                                onClick={() => setShowFullEmojiPicker(null)}
+                                className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+                              />
+                              <motion.div 
+                                initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                                animate={{ opacity: 1, scale: 1, y: 0 }}
+                                exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                                className="relative z-10"
+                              >
+                                <EmojiPicker 
+                                  theme={theme === 'dark' ? EmojiTheme.DARK : EmojiTheme.LIGHT}
+                                  onEmojiClick={(emojiData) => {
+                                    handleToggleReaction(msg.id, emojiData.emoji);
+                                    setShowFullEmojiPicker(null);
+                                    setActiveEmojiPicker(null);
+                                  }}
+                                />
+                              </motion.div>
+                            </div>
+                          )}
+                        </AnimatePresence>
                         
                         {/* Reactions Display */}
                         {msg.reactions && msg.reactions.length > 0 && (
@@ -2811,7 +3110,10 @@ export const ChatDashboard = ({ user }: { user: any }) => {
             </div>
 
             {/* Input Bar */}
-            <div className="p-6">
+            <div className={cn(
+              "p-6",
+              chatWallpaper && "bg-white/50 dark:bg-black/50 backdrop-blur-md border-t border-slate-200/50 dark:border-white/10"
+            )}>
               <div className="relative">
                 {/* Typing Indicator */}
                 <AnimatePresence>
@@ -2908,6 +3210,24 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                     <div className="absolute left-3 top-1/2 -translate-y-1/2 flex items-center gap-1">
                       <button 
                         type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="p-2 text-slate-500 hover:text-indigo-400 transition-all"
+                        title="Attach File"
+                        disabled={isUploadingFile}
+                      >
+                        <Paperclip className={cn("w-5 h-5", isUploadingFile && "animate-pulse")} />
+                      </button>
+                      <input 
+                        type="file" 
+                        ref={fileInputRef}
+                        className="hidden" 
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) handleFileUpload(file);
+                        }}
+                      />
+                      <button 
+                        type="button"
                         onClick={() => imageInputRef.current?.click()}
                         className="p-2 text-slate-500 hover:text-indigo-400 transition-all"
                         title="Upload Image"
@@ -2927,15 +3247,58 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                     </div>
                     <input
                       type="text"
+                      id="message-input"
                       value={newMessage}
-                      onChange={(e) => {
-                        setNewMessage(e.target.value);
-                        handleTyping();
-                      }}
+                      onChange={handleMessageChange}
+                      onKeyDown={handleInputKeyDown}
                       placeholder={activeRoom.is_direct ? `Message @${activeRoom.other_user_profile?.username}` : `Message #${activeRoom.name}`}
-                      disabled={isRecording}
+                      disabled={isRecording || isUploadingFile}
                       className="w-full bg-slate-100 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl pl-24 pr-12 py-4 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all placeholder:text-slate-400 dark:placeholder:text-slate-600 shadow-2xl disabled:opacity-50"
+                      autoComplete="off"
                     />
+                    
+                    <AnimatePresence>
+                      {showMentions && (
+                        <motion.div 
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: 10 }}
+                          className="absolute bottom-full left-0 mb-2 w-64 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-xl overflow-hidden z-50"
+                        >
+                          {members.filter(m => m.username?.toLowerCase().includes(mentionQuery)).length > 0 ? (
+                            members.filter(m => m.username?.toLowerCase().includes(mentionQuery)).map((member, idx) => (
+                              <button
+                                key={member.id}
+                                type="button"
+                                className={cn(
+                                  "w-full text-left px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2 transition-colors",
+                                  mentionIndex === idx && "bg-slate-100 dark:bg-slate-800"
+                                )}
+                                onClick={() => {
+                                  const words = newMessage.split(' ');
+                                  words.pop();
+                                  setNewMessage([...words, `@${member.username} `].join(' '));
+                                  setShowMentions(false);
+                                  document.getElementById('message-input')?.focus();
+                                }}
+                              >
+                                <div className="w-6 h-6 rounded-full bg-indigo-100 dark:bg-indigo-900/50 flex items-center justify-center text-indigo-600 dark:text-indigo-400 text-xs font-bold flex-shrink-0">
+                                  {member.avatar_url ? (
+                                    <img src={member.avatar_url} alt={member.username} className="w-full h-full rounded-full object-cover" />
+                                  ) : (
+                                    member.username?.[0]?.toUpperCase()
+                                  )}
+                                </div>
+                                <span className="text-sm font-medium text-slate-900 dark:text-slate-200 truncate">{member.username}</span>
+                              </button>
+                            ))
+                          ) : (
+                            <div className="px-4 py-3 text-sm text-slate-500 text-center">No members found</div>
+                          )}
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+
                     <button 
                       type="button"
                       onClick={startRecording}
@@ -3011,6 +3374,12 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                       <div className="flex flex-col">
                         <span className="text-sm font-medium text-slate-600 dark:text-slate-400 group-hover:text-slate-900 dark:group-hover:text-slate-200 transition-colors flex items-center gap-2">
                           {member.username || 'Unknown'}
+                          <span className={cn(
+                            "text-[10px] font-medium",
+                            onlineUsers.has(member.id) ? "text-emerald-500" : "text-slate-400"
+                          )}>
+                            {onlineUsers.has(member.id) ? 'Online' : 'Offline'}
+                          </span>
                           {activeRoom.created_by === member.id && (
                             <Crown className="w-3 h-3 text-amber-400 fill-amber-400/20" />
                           )}
@@ -3221,7 +3590,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
 
               <div className="pt-4 border-t border-slate-100 dark:border-white/5">
                 <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-3">Notifications</p>
-                <div className="space-y-4">
+                <div className="space-y-3">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
                       <div className={cn(
@@ -3266,16 +3635,16 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                     </div>
                     
                     {snoozeUntil && Date.now() < snoozeUntil ? (
-                      <div className="p-3 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-between">
+                      <div className="p-2.5 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-between">
                         <div className="flex items-center gap-2">
                           <div className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
-                          <span className="text-xs text-indigo-400 font-medium">
+                          <span className="text-[11px] text-indigo-400 font-medium">
                             Snoozed until {format(new Date(snoozeUntil), 'HH:mm')}
                           </span>
                         </div>
                       </div>
                     ) : (
-                      <div className="grid grid-cols-4 gap-2">
+                      <div className="grid grid-cols-4 gap-1.5">
                         {[30, 60, 120, 480].map((mins) => (
                           <button
                             key={mins}
@@ -3285,11 +3654,26 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                               setSnoozeUntil(until);
                               showToast(`Notifications snoozed for ${mins < 60 ? mins + 'm' : mins / 60 + 'h'}`);
                             }}
-                            className="py-2 rounded-lg bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/5 text-[10px] font-bold text-slate-600 dark:text-slate-400 hover:bg-indigo-500/10 hover:border-indigo-500/30 hover:text-indigo-400 transition-all"
+                            className="py-1.5 rounded-lg bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/5 text-[10px] font-bold text-slate-600 dark:text-slate-400 hover:bg-indigo-500/10 hover:border-indigo-500/30 hover:text-indigo-400 transition-all"
                           >
                             {mins < 60 ? mins + 'm' : mins / 60 + 'h'}
                           </button>
                         ))}
+                        <div className="col-span-4 mt-2">
+                          <Input
+                            type="number"
+                            placeholder="Custom minutes"
+                            onChange={(e) => {
+                              const mins = parseInt(e.target.value);
+                              if (!isNaN(mins) && mins > 0) {
+                                const until = Date.now() + mins * 60 * 1000;
+                                setSnoozeUntil(until);
+                                showToast(`Notifications snoozed for ${mins}m`);
+                              }
+                            }}
+                            className="text-[10px]"
+                          />
+                        </div>
                       </div>
                     )}
                   </div>
@@ -3298,7 +3682,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                     <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest flex items-center gap-2">
                       <Volume2 className="w-3 h-3" /> Notification Sound
                     </label>
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className="flex flex-wrap gap-1.5">
                       {Object.keys(NOTIFICATION_SOUNDS).map((sound) => (
                         <button
                           key={sound}
@@ -3312,7 +3696,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                             }
                           }}
                           className={cn(
-                            "flex items-center justify-between px-3 py-2 rounded-xl text-xs font-medium transition-all border",
+                            "flex-1 min-w-[80px] flex items-center justify-between px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all border",
                             notificationSound === sound 
                               ? "bg-indigo-500/10 border-indigo-500/30 text-indigo-500" 
                               : "bg-slate-50 dark:bg-white/5 border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"
@@ -3328,7 +3712,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                   <Button 
                     type="button" 
                     variant="outline" 
-                    className="w-full justify-start gap-3 h-12"
+                    className="w-full justify-start gap-3 h-10 text-xs"
                     onClick={requestNotificationPermission}
                     disabled={notificationPermission === 'granted'}
                   >
@@ -3338,6 +3722,52 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                     )} />
                     {notificationPermission === 'granted' ? 'Browser Notifications Enabled' : 'Enable Browser Notifications'}
                   </Button>
+                </div>
+              </div>
+
+              <div className="pt-4 border-t border-slate-100 dark:border-white/5">
+                <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-3">Appearance</p>
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                      <Palette className="w-3 h-3" /> Theme
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      {[
+                        { id: 'default', label: 'Default' },
+                        { id: 'minimalist', label: 'Minimalist' },
+                        { id: 'dark-blue', label: 'Dark Blue' },
+                        { id: 'forest', label: 'Forest' }
+                      ].map((theme) => (
+                        <button
+                          key={theme.id}
+                          type="button"
+                          onClick={() => setChatTheme(theme.id)}
+                          className={cn(
+                            "flex items-center justify-between px-3 py-2 rounded-xl text-xs font-medium transition-all border",
+                            chatTheme === theme.id 
+                              ? "bg-indigo-500/10 border-indigo-500/30 text-indigo-500" 
+                              : "bg-slate-50 dark:bg-white/5 border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"
+                          )}
+                        >
+                          <span>{theme.label}</span>
+                          {chatTheme === theme.id && <Check className="w-3 h-3" />}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                      <ImageIcon className="w-3 h-3" /> Custom Wallpaper URL
+                    </label>
+                    <Input 
+                      placeholder="https://example.com/image.jpg" 
+                      value={chatWallpaper}
+                      onChange={(e) => setChatWallpaper(e.target.value)}
+                    />
+                    <p className="text-[10px] text-slate-400">Leave empty to use the selected theme's background.</p>
+                  </div>
                 </div>
               </div>
               
@@ -3352,6 +3782,25 @@ export const ChatDashboard = ({ user }: { user: any }) => {
           </Modal>
         )}
 
+        {showEditConfirmation && pendingEditMessageId && (
+          <Modal title="Edit Message" onClose={() => setShowEditConfirmation(false)}>
+            <div className="space-y-4">
+              <p className="text-sm text-slate-600 dark:text-slate-300">Are you sure you want to edit this message?</p>
+              <div className="flex gap-3">
+                <Button variant="ghost" className="flex-1" onClick={() => setShowEditConfirmation(false)}>Cancel</Button>
+                <Button className="flex-1 bg-indigo-600 hover:bg-indigo-700" onClick={() => {
+                  const msg = messages.find(m => m.id === pendingEditMessageId);
+                  if (msg) {
+                    setEditingMessageId(msg.id);
+                    setEditMessageContent(msg.content);
+                  }
+                  setShowEditConfirmation(false);
+                }}>Edit</Button>
+              </div>
+            </div>
+          </Modal>
+        )}
+
         {showRoomSettingsModal && activeRoom && (
           <Modal title="Room Settings" onClose={() => {
             setShowRoomSettingsModal(false);
@@ -3363,26 +3812,28 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                 <form 
                   onSubmit={(e) => {
                     e.preventDefault();
-                    if (editRoomName.trim() && activeRoom.created_by === user.id) handleUpdateRoom();
+                    if (editRoomName.trim() && activeRoom.created_by === user.id && !activeRoom.is_direct) handleUpdateRoom();
                   }}
                   className="space-y-6"
                 >
-                  <Input 
-                    label="Room Name" 
-                    placeholder="Enter new room name" 
-                    value={editRoomName}
-                    onChange={(e) => setEditRoomName(e.target.value)}
-                    autoFocus
-                    disabled={activeRoom.created_by !== user.id}
-                  />
+                  {!activeRoom.is_direct && (
+                    <Input 
+                      label="Room Name" 
+                      placeholder="Enter new room name" 
+                      value={editRoomName}
+                      onChange={(e) => setEditRoomName(e.target.value)}
+                      autoFocus
+                      disabled={activeRoom.created_by !== user.id}
+                    />
+                  )}
 
-                  <div className="pt-4 border-t border-slate-100 dark:border-white/5">
+                  <div className={cn("border-slate-100 dark:border-white/5", !activeRoom.is_direct && "pt-4 border-t")}>
                     <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-3">Room Notifications</p>
                     <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5">
                       <div className="flex items-center gap-3">
                         <div className={cn(
                           "p-2 rounded-lg",
-                          mutedRooms.has(activeRoom.id) ? "bg-red-500/10 text-red-500" : "bg-emerald-500/10 text-emerald-500"
+                          mutedRooms.has(activeRoom.id) ? "text-red-500" : "text-emerald-500"
                         )}>
                           {mutedRooms.has(activeRoom.id) ? <BellOff className="w-4 h-4" /> : <Bell className="w-4 h-4" />}
                         </div>
@@ -3399,78 +3850,81 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                         type="button"
                         onClick={() => toggleRoomMute(activeRoom.id)}
                         className={cn(
-                          "px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-all",
-                          mutedRooms.has(activeRoom.id) 
-                            ? "bg-emerald-500 text-white shadow-lg shadow-emerald-500/20" 
-                            : "bg-red-500 text-white shadow-lg shadow-red-500/20"
+                          "w-10 h-5 rounded-full transition-colors relative",
+                          mutedRooms.has(activeRoom.id) ? "bg-slate-300 dark:bg-slate-700" : "bg-indigo-500"
                         )}
                       >
-                        {mutedRooms.has(activeRoom.id) ? 'Unmute' : 'Mute'}
+                        <div className={cn(
+                          "absolute top-1 w-3 h-3 rounded-full bg-white transition-all",
+                          mutedRooms.has(activeRoom.id) ? "left-1" : "left-6"
+                        )} />
                       </button>
                     </div>
 
-                    <div className="space-y-3">
-                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                        <Volume2 className="w-3 h-3" /> Room Notification Sound
-                      </label>
-                      <div className="grid grid-cols-2 gap-2">
+                    <div className="pt-4 border-t border-slate-100 dark:border-white/5">
+                      <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-3">Pinned Messages</p>
+                      <div className="space-y-2">
+                        {messages.filter(m => m.is_pinned).length === 0 ? (
+                          <p className="text-sm text-slate-500 italic">No pinned messages.</p>
+                        ) : (
+                          messages.filter(m => m.is_pinned).map(msg => (
+                            <div key={msg.id} className="p-3 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5 flex items-center justify-between">
+                              <p className="text-sm text-slate-700 dark:text-slate-200 truncate">{msg.content || 'Image/File'}</p>
+                              <button onClick={() => {
+                                document.getElementById(`msg-${msg.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                setShowRoomSettingsModal(false);
+                              }} className="text-xs text-indigo-500 font-bold">View</button>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="pt-4 border-t border-slate-100 dark:border-white/5">
+                      <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-3">Notification Sound</p>
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={roomSounds[activeRoom.id] || 'default'}
+                          onChange={(e) => {
+                            const sound = e.target.value;
+                            setRoomSounds(prev => ({
+                              ...prev,
+                              [activeRoom.id]: sound === 'default' ? '' : sound
+                            }));
+                          }}
+                          className="flex-1 p-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5 text-sm text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                        >
+                          <option value="default">Default (Global)</option>
+                          {Object.keys(NOTIFICATION_SOUNDS).filter(key => key !== 'none').map(sound => (
+                            <option key={sound} value={sound}>{sound.charAt(0).toUpperCase() + sound.slice(1)}</option>
+                          ))}
+                        </select>
                         <button
                           type="button"
-                          onClick={() => {
-                            setRoomSounds(prev => {
-                              const next = { ...prev };
-                              delete next[activeRoom.id];
-                              return next;
-                            });
-                            showToast('Room sound reset to default');
-                          }}
-                          className={cn(
-                            "px-3 py-2 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-all border col-span-2",
-                            !roomSounds[activeRoom.id]
-                              ? "bg-indigo-500 text-white border-indigo-500 shadow-lg shadow-indigo-500/20"
-                              : "bg-slate-100 dark:bg-white/5 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-white/5 hover:bg-slate-200 dark:hover:bg-white/10"
-                          )}
+                          onClick={() => playNotificationSound(activeRoom.id)}
+                          className="p-2 rounded-xl bg-slate-100 dark:bg-white/10 hover:bg-slate-200 dark:hover:bg-white/20 transition-colors"
+                          title="Preview Sound"
                         >
-                          Use Global Default
+                          <Volume2 className="w-4 h-4 text-slate-600 dark:text-slate-300" />
                         </button>
-                        {Object.keys(NOTIFICATION_SOUNDS).map((sound) => (
-                          <button
-                            key={`room-sound-${sound}`}
-                            type="button"
-                            onClick={() => {
-                              setRoomSounds(prev => ({ ...prev, [activeRoom.id]: sound }));
-                              // Preview sound
-                              const soundUrl = NOTIFICATION_SOUNDS[sound as keyof typeof NOTIFICATION_SOUNDS];
-                              if (soundUrl) {
-                                new Audio(soundUrl).play().catch(() => {});
-                              }
-                            }}
-                            className={cn(
-                              "px-3 py-2 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-all border",
-                              (roomSounds[activeRoom.id] || notificationSound) === sound
-                                ? "bg-indigo-500 text-white border-indigo-500 shadow-lg shadow-indigo-500/20"
-                                : "bg-slate-100 dark:bg-white/5 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-white/5 hover:bg-slate-200 dark:hover:bg-white/10"
-                            )}
-                          >
-                            {sound}
-                          </button>
-                        ))}
                       </div>
                     </div>
                   </div>
 
                   <div className="space-y-2">
-                    {activeRoom.created_by === user.id ? (
-                      <>
-                        <Button type="submit" className="w-full">Update Name</Button>
-                        <Button type="button" variant="outline" className="w-full text-red-400 hover:text-red-300 border-red-500/20 hover:bg-red-500/10" onClick={() => setIsDeleting(true)}>
-                          Delete Room
+                    {!activeRoom.is_direct && (
+                      activeRoom.created_by === user.id ? (
+                        <>
+                          <Button type="submit" className="w-full">Update Name</Button>
+                          <Button type="button" variant="outline" className="w-full text-red-400 hover:text-red-300 border-red-500/20 hover:bg-red-500/10" onClick={() => setIsDeleting(true)}>
+                            Delete Room
+                          </Button>
+                        </>
+                      ) : (
+                        <Button type="button" variant="outline" className="w-full text-red-400 hover:text-red-300 border-red-500/20 hover:bg-red-500/10" onClick={() => setIsLeaving(true)}>
+                          Leave Room
                         </Button>
-                      </>
-                    ) : (
-                      <Button type="button" variant="outline" className="w-full text-red-400 hover:text-red-300 border-red-500/20 hover:bg-red-500/10" onClick={() => setIsLeaving(true)}>
-                        Leave Room
-                      </Button>
+                      )
                     )}
                   </div>
                 </form>
@@ -3598,6 +4052,36 @@ export const ChatDashboard = ({ user }: { user: any }) => {
         )}
       </AnimatePresence>
 
+      {/* Room Context Menu */}
+      <AnimatePresence>
+        {roomContextMenu && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            style={{ 
+              position: 'fixed', 
+              top: roomContextMenu.y, 
+              left: roomContextMenu.x,
+              zIndex: 1000
+            }}
+            className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-2xl py-1.5 min-w-[160px] overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              onClick={() => {
+                markRoomAsUnread(roomContextMenu.roomId);
+                setRoomContextMenu(null);
+              }}
+              className="w-full flex items-center gap-3 px-4 py-2 text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+            >
+              <History className="w-4 h-4" />
+              Mark as Unread
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Context Menu */}
       <AnimatePresence>
         {contextMenu && (
@@ -3680,14 +4164,24 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                           {emoji}
                         </button>
                       ))}
+                      <button
+                        onClick={() => {
+                          setShowFullEmojiPicker(msg.id);
+                          setContextMenu(null);
+                        }}
+                        className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors text-slate-500 flex items-center justify-center"
+                        title="More emojis"
+                      >
+                        <Plus className="w-5 h-5" />
+                      </button>
                     </div>
                   </div>
                   
                   {isMe && !msg.audio_url && (new Date().getTime() - new Date(msg.created_at).getTime()) < 15 * 60 * 1000 && (
                     <button
                       onClick={() => {
-                        setEditingMessageId(msg.id);
-                        setEditMessageContent(msg.content);
+                        setPendingEditMessageId(msg.id);
+                        setShowEditConfirmation(true);
                         setContextMenu(null);
                       }}
                       className="w-full flex items-center gap-3 px-4 py-2 text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
@@ -3732,7 +4226,7 @@ const Modal = ({ title, children, onClose }: { title: string, children: React.Re
       initial={{ opacity: 0, scale: 0.95, y: 20 }}
       animate={{ opacity: 1, scale: 1, y: 0 }}
       exit={{ opacity: 0, scale: 0.95, y: 20 }}
-      className="relative w-full max-w-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-2xl"
+      className="relative w-full max-w-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-2xl max-h-[90vh] overflow-y-auto scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800"
     >
       <h3 className="text-xl font-bold text-slate-900 dark:text-white mb-6">{title}</h3>
       {children}

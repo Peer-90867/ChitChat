@@ -93,6 +93,19 @@ export const AuthForm = () => {
             required
           />
 
+          <div className="flex items-center">
+            <input
+              type="checkbox"
+              id="rememberMe"
+              checked={true} // Supabase persists by default
+              disabled // Supabase persists by default
+              className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded"
+            />
+            <label htmlFor="rememberMe" className="ml-2 block text-sm text-slate-600 dark:text-slate-400">
+              Remember me (Always enabled)
+            </label>
+          </div>
+
           {error && (
             <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-500 text-sm">
               {error}

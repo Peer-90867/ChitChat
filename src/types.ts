@@ -3,6 +3,8 @@ export interface Profile {
   username: string;
   avatar_url?: string;
   status?: string;
+  wallpaper_url?: string;
+  theme_preference?: string;
   updated_at?: string;
 }
 
@@ -33,6 +35,10 @@ export interface Message {
   content: string;
   audio_url?: string;
   image_url?: string;
+  file_url?: string;
+  file_name?: string;
+  file_size?: number;
+  file_type?: string;
   is_pinned?: boolean;
   reply_to_id?: string;
   reply_to_message?: Message;
@@ -42,6 +48,7 @@ export interface Message {
     image?: string;
     url: string;
   };
+  read_by?: string[];
   created_at: string;
   updated_at?: string;
   is_read?: boolean;
