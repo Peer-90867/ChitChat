@@ -56,6 +56,16 @@ const generateRoomCode = customAlphabet('123456789ABCDEFGHJKLMNPQRSTUVWXYZ', 6);
 
 export const ChatDashboard = ({ user }: { user: any }) => {
   const { theme, toggleTheme } = useTheme();
+  const [toasts, setToasts] = useState<{ id: string; message: string; type: 'success' | 'error' }[]>([]);
+
+  const showToast = (message: string, type: 'success' | 'error' = 'success') => {
+    const id = Math.random().toString(36).substring(2, 9);
+    setToasts(prev => [...prev, { id, message, type }]);
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, 3000);
+  };
+
   const [rooms, setRooms] = useState<Room[]>([]);
   const [activeRoom, setActiveRoom] = useState<Room | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -83,7 +93,6 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const [isLeaving, setIsLeaving] = useState(false);
   const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
   const [typingUsers, setTypingUsers] = useState<Set<string>>(new Set());
-  const [toasts, setToasts] = useState<{ id: string; message: string; type: 'success' | 'error' }[]>([]);
   const [activeEmojiPicker, setActiveEmojiPicker] = useState<string | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editMessageContent, setEditMessageContent] = useState('');
@@ -95,6 +104,45 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; messageId: string } | null>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [hasUnread, setHasUnread] = useState(false);
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(
+    typeof Notification !== 'undefined' ? Notification.permission : 'default'
+  );
+
+  const requestNotificationPermission = async () => {
+    if (!('Notification' in window)) {
+      showToast('This browser does not support notifications.', 'error');
+      return;
+    }
+    try {
+      const permission = await Notification.requestPermission();
+      setNotificationPermission(permission);
+      if (permission === 'granted') {
+        showToast('Notifications enabled!');
+      } else {
+        showToast('Notifications disabled.', 'error');
+      }
+    } catch (error) {
+      console.error('Error requesting notification permission:', error);
+      showToast('Failed to request notification permission', 'error');
+    }
+  };
+
+  const showNotification = (title: string, body: string, icon?: string) => {
+    if (notificationPermission === 'granted' && document.visibilityState === 'hidden') {
+      try {
+        const notification = new Notification(title, {
+          body,
+          icon: icon || '/favicon.ico',
+        });
+        notification.onclick = () => {
+          window.focus();
+          notification.close();
+        };
+      } catch (error) {
+        console.error('Error showing notification:', error);
+      }
+    }
+  };
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -114,14 +162,6 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const COMMON_EMOJIS = ['👍', '❤️', '🔥', '😂', '😮', '😢', '🙏', '✅', '👀', '✨', '🎉', '💯', '🚀', '🤔', '👏', '🙌'];
-
-  const showToast = (message: string, type: 'success' | 'error' = 'success') => {
-    const id = Math.random().toString(36).substring(2, 9);
-    setToasts(prev => [...prev, { id, message, type }]);
-    setTimeout(() => {
-      setToasts(prev => prev.filter(t => t.id !== id));
-    }, 3000);
-  };
 
   useEffect(() => {
     fetchProfile();
@@ -322,6 +362,51 @@ export const ChatDashboard = ({ user }: { user: any }) => {
       };
     }
   }, [activeRoom, profile]);
+
+  useEffect(() => {
+    if (!user || rooms.length === 0) return;
+
+    const channel = supabase.channel('global-notifications')
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'messages',
+        },
+        async (payload) => {
+          const newMessage = payload.new as Message;
+          
+          // Don't notify for own messages
+          if (newMessage.user_id === user.id) return;
+          
+          // Check if message is in one of the user's rooms
+          const room = rooms.find(r => r.id === newMessage.room_id);
+          if (!room) return;
+
+          // Fetch sender profile for notification
+          const { data: profileData } = await supabase
+            .from('profiles')
+            .select('username, avatar_url')
+            .eq('id', newMessage.user_id)
+            .single();
+
+          const senderName = profileData?.username || 'Someone';
+          const roomName = room.name || 'a room';
+          
+          showNotification(
+            `New message in ${roomName}`,
+            `${senderName}: ${newMessage.content.substring(0, 100)}${newMessage.content.length > 100 ? '...' : ''}`,
+            profileData?.avatar_url
+          );
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [user, rooms, notificationPermission]);
 
   useEffect(() => {
     if (isAtBottom) {
@@ -678,21 +763,24 @@ export const ChatDashboard = ({ user }: { user: any }) => {
 
   const fetchMembers = async (roomId: string) => {
     try {
-      const { data, error } = await supabase
+      const { data: memberData, error: memberError } = await supabase
         .from('room_members')
-        .select(`
-          profiles:user_id (*)
-        `)
+        .select('user_id')
         .eq('room_id', roomId);
       
-      if (error) throw error;
+      if (memberError) throw memberError;
       
-      if (data) {
-        // Filter out any null profiles to prevent UI crashes
-        const validMembers = data
-          .map((item: any) => item.profiles)
-          .filter(Boolean);
-        setMembers(validMembers);
+      if (memberData && memberData.length > 0) {
+        const userIds = memberData.map(m => m.user_id);
+        const { data: profileData, error: profileError } = await supabase
+          .from('profiles')
+          .select('*')
+          .in('id', userIds);
+        
+        if (profileError) throw profileError;
+        setMembers(profileData || []);
+      } else {
+        setMembers([]);
       }
     } catch (error: any) {
       console.error('Error fetching members:', error);
@@ -2362,6 +2450,23 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                 value={editStatus}
                 onChange={(e) => setEditStatus(e.target.value)}
               />
+
+              <div className="pt-4 border-t border-slate-100 dark:border-white/5">
+                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-3">Notifications</p>
+                <Button 
+                  type="button" 
+                  variant="outline" 
+                  className="w-full justify-start gap-3 h-12"
+                  onClick={requestNotificationPermission}
+                  disabled={notificationPermission === 'granted'}
+                >
+                  <div className={cn(
+                    "w-2 h-2 rounded-full",
+                    notificationPermission === 'granted' ? "bg-emerald-500" : "bg-amber-500"
+                  )} />
+                  {notificationPermission === 'granted' ? 'Notifications Enabled' : 'Enable Browser Notifications'}
+                </Button>
+              </div>
               
               <div className="pt-2 space-y-2">
                 <Button type="submit" className="w-full" isLoading={isUploadingAvatar}>
