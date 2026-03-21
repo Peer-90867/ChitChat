@@ -1638,31 +1638,31 @@ export const ChatDashboard = ({ user }: { user: any }) => {
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-slate-900 border border-slate-800 p-6 rounded-2xl max-w-md w-full shadow-2xl"
+              className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-2xl max-w-md w-full shadow-2xl transition-colors duration-300"
             >
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                <h3 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
                   <Volume2 className="w-5 h-5 text-indigo-400" />
                   Fix Voice Messages
                 </h3>
                 <button 
                   onClick={() => setShowStorageGuide(false)}
-                  className="p-1 hover:bg-slate-800 rounded-full transition-colors"
+                  className="p-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors"
                 >
-                  <X className="w-5 h-5" />
+                  <X className="w-5 h-5 text-slate-500" />
                 </button>
               </div>
               
-              <div className="space-y-4 text-slate-300 text-sm">
+              <div className="space-y-4 text-slate-600 dark:text-slate-300 text-sm">
                 <p>To enable voice messages, you need to create a storage bucket in your Supabase project:</p>
                 
-                <div className="bg-slate-950 p-3 rounded-lg border border-slate-800 font-mono text-xs overflow-x-auto">
+                <div className="bg-slate-100 dark:bg-slate-950 p-3 rounded-lg border border-slate-200 dark:border-slate-800 font-mono text-xs overflow-x-auto">
                   <p className="text-indigo-400"># Step 1</p>
                   <p>Go to Supabase Dashboard &gt; Storage</p>
                   <p className="text-indigo-400 mt-2"># Step 2</p>
-                  <p>Create bucket named: <span className="text-white">voice-messages</span></p>
+                  <p>Create bucket named: <span className="text-slate-900 dark:text-white font-bold">voice-messages</span></p>
                   <p className="text-indigo-400 mt-2"># Step 3</p>
-                  <p>Set bucket to <span className="text-white">PUBLIC</span></p>
+                  <p>Set bucket to <span className="text-slate-900 dark:text-white font-bold">PUBLIC</span></p>
                 </div>
 
                 <button
@@ -1879,7 +1879,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
               </div>
 
               {/* User Profile Section inside Mobile Drawer */}
-              <div className="p-4 bg-slate-900/50 border-t border-white/5">
+              <div className="p-4 bg-slate-100 dark:bg-slate-900/50 border-t border-slate-200 dark:border-white/5 transition-colors duration-300">
                 <div className="flex items-center gap-3">
                   <button 
                     onClick={() => {
@@ -1898,7 +1898,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                     setShowProfileModal(true);
                     setIsMobileMenuOpen(false);
                   }}>
-                    <p className="text-sm font-bold text-white truncate">{profile?.username || 'User'}</p>
+                    <p className="text-sm font-bold text-slate-900 dark:text-white truncate">{profile?.username || 'User'}</p>
                     <p className="text-xs text-slate-500 truncate">{user.email}</p>
                   </div>
                   <button onClick={handleLogout} className="p-2 hover:bg-red-500/10 rounded-xl text-slate-500 hover:text-red-400 transition-all">
@@ -2104,7 +2104,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
         </div>
 
         {/* User Profile Section */}
-        <div className="p-4 bg-slate-900/50 border-t border-white/5">
+        <div className="p-4 bg-slate-100 dark:bg-slate-900/50 border-t border-slate-200 dark:border-white/5 transition-colors duration-300">
           <div className="flex items-center gap-3 px-2">
             <button 
               onClick={() => setShowProfileModal(true)}
@@ -2117,7 +2117,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
               )}
             </button>
             <div className="flex-1 min-w-0 cursor-pointer" onClick={() => setShowProfileModal(true)}>
-              <p className="text-sm font-semibold text-slate-200 truncate">{profile?.username || 'User'}</p>
+              <p className="text-sm font-semibold text-slate-900 dark:text-slate-200 truncate">{profile?.username || 'User'}</p>
               <p className="text-xs text-slate-500 truncate">{user.email}</p>
             </div>
             <button 
@@ -2132,22 +2132,22 @@ export const ChatDashboard = ({ user }: { user: any }) => {
       </aside>
 
       {/* Main Chat Area */}
-      <main className="flex-1 flex flex-col bg-[#020617] w-full min-w-0 relative">
+      <main className="flex-1 flex flex-col bg-white dark:bg-[#020617] w-full min-w-0 relative transition-colors duration-300">
         {/* Mobile Global Header - Always visible on mobile */}
-        <header className="lg:hidden h-16 px-4 border-b border-white/5 flex items-center justify-between bg-[#020617]/50 backdrop-blur-md z-30 sticky top-0">
+        <header className="lg:hidden h-16 px-4 border-b border-slate-200 dark:border-white/5 flex items-center justify-between bg-white/50 dark:bg-[#020617]/50 backdrop-blur-md z-30 sticky top-0 transition-colors duration-300">
           <div className="flex items-center gap-3 min-w-0">
             <button 
               onClick={() => setIsMobileMenuOpen(true)}
-              className="p-2 -ml-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl transition-all"
+              className="p-2 -ml-2 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-all"
             >
               <Menu className="w-6 h-6" />
             </button>
             {activeRoom ? (
               <div className="min-w-0">
-                <h2 className="font-bold text-white truncate text-sm">{activeRoom.name}</h2>
+                <h2 className="font-bold text-slate-900 dark:text-white truncate text-sm">{activeRoom.name}</h2>
                 <div className="flex items-center gap-2">
-                  <div className="flex items-center gap-1.5 bg-slate-800/50 px-2 py-0.5 rounded-lg border border-white/5">
-                    <p className="text-[10px] text-slate-400 truncate font-medium">Code: <span className="font-mono text-indigo-400">{activeRoom.code}</span></p>
+                  <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800/50 px-2 py-0.5 rounded-lg border border-slate-200 dark:border-white/5">
+                    <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate font-medium">Code: <span className="font-mono text-indigo-400">{activeRoom.code}</span></p>
                     <button 
                       onClick={() => copyToClipboard(activeRoom.code)}
                       className="p-0.5 text-slate-500 hover:text-indigo-400 transition-colors"
@@ -2175,7 +2175,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                 <div className="w-7 h-7 bg-indigo-600 rounded-lg flex items-center justify-center">
                   <MessageSquare className="w-4 h-4 text-white" />
                 </div>
-                <span className="font-bold text-slate-200 tracking-tight">ChitChat</span>
+                <span className="font-bold text-slate-900 dark:text-slate-200 tracking-tight">ChitChat</span>
               </div>
             )}
           </div>
@@ -2190,7 +2190,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                   if (showSearch) setSearchQuery('');
                 }}
                 className={cn(
-                  "text-slate-400",
+                  "text-slate-500 dark:text-slate-400",
                   showSearch ? 'text-indigo-400 bg-indigo-500/10' : ''
                 )}
               >
@@ -2201,7 +2201,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                 size="icon" 
                 onClick={() => setShowMembers(!showMembers)}
                 className={cn(
-                  "text-slate-400",
+                  "text-slate-500 dark:text-slate-400",
                   showMembers ? 'text-indigo-400 bg-indigo-500/10' : ''
                 )}
               >
@@ -2212,7 +2212,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                   variant="ghost" 
                   size="icon" 
                   onClick={() => setShowMobileRoomMenu(!showMobileRoomMenu)}
-                  className="text-slate-400"
+                  className="text-slate-500 dark:text-slate-400"
                 >
                   <MoreVertical className="w-5 h-5" />
                 </Button>
@@ -2228,7 +2228,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                         initial={{ opacity: 0, scale: 0.95, y: -10 }}
                         animate={{ opacity: 1, scale: 1, y: 0 }}
                         exit={{ opacity: 0, scale: 0.95, y: -10 }}
-                        className="absolute right-0 mt-2 w-48 bg-slate-900 border border-slate-800 rounded-xl shadow-xl z-30 py-1 overflow-hidden"
+                        className="absolute right-0 mt-2 w-48 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-xl z-30 py-1 overflow-hidden transition-colors duration-300"
                       >
                         <button
                           onClick={() => {
@@ -2236,7 +2236,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                             if (showSearch) setSearchQuery('');
                             setShowMobileRoomMenu(false);
                           }}
-                          className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-slate-300 hover:bg-slate-800 transition-colors"
+                          className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
                         >
                           <Search className="w-4 h-4" />
                           {showSearch ? 'Hide Search' : 'Search Messages'}
@@ -2246,7 +2246,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                             setShowMembers(!showMembers);
                             setShowMobileRoomMenu(false);
                           }}
-                          className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-slate-300 hover:bg-slate-800 transition-colors"
+                          className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
                         >
                           <User className="w-4 h-4" />
                           {showMembers ? 'Hide Members' : 'Show Members'}
@@ -2259,7 +2259,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                           }}
                           className={cn(
                             "w-full flex items-center gap-3 px-4 py-2.5 text-sm transition-colors",
-                            activeRoom.created_by === user.id ? "text-slate-300 hover:bg-slate-800" : "text-slate-600 cursor-not-allowed"
+                            activeRoom.created_by === user.id ? "text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800" : "text-slate-400 dark:text-slate-600 cursor-not-allowed"
                           )}
                           disabled={activeRoom.created_by !== user.id}
                         >
@@ -2284,7 +2284,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                   initial={{ height: 0, opacity: 0 }}
                   animate={{ height: 'auto', opacity: 1 }}
                   exit={{ height: 0, opacity: 0 }}
-                  className="lg:hidden px-4 py-2 border-b border-white/5 bg-[#020617]/50"
+                  className="lg:hidden px-4 py-2 border-b border-slate-200 dark:border-white/5 bg-white/50 dark:bg-[#020617]/50 transition-colors duration-300"
                 >
                   <div className="relative">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
@@ -2293,7 +2293,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
                       placeholder="Search messages..."
-                      className="w-full bg-slate-900/50 border border-white/5 rounded-xl pl-10 pr-10 py-2 text-sm text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500/50 placeholder:text-slate-600"
+                      className="w-full bg-slate-100 dark:bg-slate-900/50 border border-slate-200 dark:border-white/5 rounded-xl pl-10 pr-10 py-2 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500/50 placeholder:text-slate-400 dark:placeholder:text-slate-600 transition-colors duration-300"
                     />
                     {searchQuery && (
                       <button 
@@ -2631,7 +2631,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                                 <textarea
                                   value={editMessageContent}
                                   onChange={(e) => setEditMessageContent(e.target.value)}
-                                  className="w-full bg-slate-900/50 border border-white/10 rounded-lg p-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-indigo-500/50 resize-none min-h-[60px]"
+                                  className="w-full bg-slate-100 dark:bg-slate-900/50 border border-slate-200 dark:border-white/10 rounded-lg p-2 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-indigo-500/50 resize-none min-h-[60px] transition-colors duration-300"
                                   autoFocus
                                 />
                                 <div className="flex justify-end gap-2">
@@ -2990,7 +2990,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                 <h3 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
                   Members — {members.length}
                 </h3>
-                <button onClick={() => setShowMembers(false)} className="lg:hidden text-slate-500 hover:text-white">
+                <button onClick={() => setShowMembers(false)} className="lg:hidden text-slate-500 hover:text-slate-900 dark:hover:text-white transition-colors">
                   <X className="w-4 h-4" />
                 </button>
               </div>
@@ -3111,7 +3111,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
           }}>
             {isCropping && imageToCrop ? (
               <div className="space-y-6">
-                <div className="relative h-64 w-full bg-slate-900 rounded-xl overflow-hidden">
+                <div className="relative h-64 w-full bg-slate-100 dark:bg-slate-900 rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800">
                   <Cropper
                     image={imageToCrop}
                     crop={crop}
@@ -3164,7 +3164,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
               >
               <div className="flex flex-col items-center gap-4">
                 <div className="relative group">
-                  <div className="w-24 h-24 rounded-3xl bg-slate-800 border-2 border-indigo-500/30 flex items-center justify-center text-4xl text-indigo-400 font-bold overflow-hidden shadow-xl">
+                  <div className="w-24 h-24 rounded-3xl bg-slate-100 dark:bg-slate-800 border-2 border-indigo-500/30 flex items-center justify-center text-4xl text-indigo-400 font-bold overflow-hidden shadow-xl transition-colors duration-300">
                     {avatarPreview || profile?.avatar_url ? (
                       <img 
                         src={avatarPreview || profile?.avatar_url} 
