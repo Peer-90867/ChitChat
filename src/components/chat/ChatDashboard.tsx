@@ -39,7 +39,10 @@ import {
   Paperclip,
   SmilePlus,
   Sun,
-  Moon
+  Moon,
+  Bell,
+  BellOff,
+  VolumeX
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
@@ -107,6 +110,57 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>(
     typeof Notification !== 'undefined' ? Notification.permission : 'default'
   );
+  const [globalNotificationsEnabled, setGlobalNotificationsEnabled] = useState<boolean>(() => {
+    const saved = localStorage.getItem('globalNotificationsEnabled');
+    return saved !== null ? JSON.parse(saved) : true;
+  });
+  const [mutedRooms, setMutedRooms] = useState<Set<string>>(() => {
+    const saved = localStorage.getItem('mutedRooms');
+    return saved !== null ? new Set(JSON.parse(saved)) : new Set();
+  });
+  const [notificationSound, setNotificationSound] = useState<string>(() => {
+    return localStorage.getItem('notificationSound') || 'pop';
+  });
+
+  useEffect(() => {
+    localStorage.setItem('globalNotificationsEnabled', JSON.stringify(globalNotificationsEnabled));
+  }, [globalNotificationsEnabled]);
+
+  useEffect(() => {
+    localStorage.setItem('mutedRooms', JSON.stringify(Array.from(mutedRooms)));
+  }, [mutedRooms]);
+
+  useEffect(() => {
+    localStorage.setItem('notificationSound', notificationSound);
+  }, [notificationSound]);
+
+  const NOTIFICATION_SOUNDS = {
+    none: null,
+    pop: 'https://assets.mixkit.co/active_storage/sfx/2358/2358-preview.mp3',
+    ding: 'https://assets.mixkit.co/active_storage/sfx/2354/2354-preview.mp3',
+    chime: 'https://assets.mixkit.co/active_storage/sfx/2361/2361-preview.mp3',
+    bubble: 'https://assets.mixkit.co/active_storage/sfx/2359/2359-preview.mp3',
+  };
+
+  const playNotificationSound = () => {
+    const soundUrl = NOTIFICATION_SOUNDS[notificationSound as keyof typeof NOTIFICATION_SOUNDS];
+    if (soundUrl) {
+      const audio = new Audio(soundUrl);
+      audio.play().catch(err => console.error('Error playing notification sound:', err));
+    }
+  };
+
+  const toggleRoomMute = (roomId: string) => {
+    setMutedRooms(prev => {
+      const next = new Set(prev);
+      if (next.has(roomId)) {
+        next.delete(roomId);
+      } else {
+        next.add(roomId);
+      }
+      return next;
+    });
+  };
 
   const requestNotificationPermission = async () => {
     if (!('Notification' in window)) {
@@ -127,7 +181,15 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     }
   };
 
-  const showNotification = (title: string, body: string, icon?: string) => {
+  const showNotification = (title: string, body: string, roomId: string, icon?: string) => {
+    if (!globalNotificationsEnabled) return;
+    if (mutedRooms.has(roomId)) return;
+
+    // Play sound if window is hidden OR if it's not the active room
+    if (document.visibilityState === 'hidden' || activeRoom?.id !== roomId) {
+      playNotificationSound();
+    }
+
     if (notificationPermission === 'granted' && document.visibilityState === 'hidden') {
       try {
         const notification = new Notification(title, {
@@ -397,6 +459,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
           showNotification(
             `New message in ${roomName}`,
             `${senderName}: ${newMessage.content.substring(0, 100)}${newMessage.content.length > 100 ? '...' : ''}`,
+            newMessage.room_id,
             profileData?.avatar_url
           );
         }
@@ -2453,19 +2516,80 @@ export const ChatDashboard = ({ user }: { user: any }) => {
 
               <div className="pt-4 border-t border-slate-100 dark:border-white/5">
                 <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-3">Notifications</p>
-                <Button 
-                  type="button" 
-                  variant="outline" 
-                  className="w-full justify-start gap-3 h-12"
-                  onClick={requestNotificationPermission}
-                  disabled={notificationPermission === 'granted'}
-                >
-                  <div className={cn(
-                    "w-2 h-2 rounded-full",
-                    notificationPermission === 'granted' ? "bg-emerald-500" : "bg-amber-500"
-                  )} />
-                  {notificationPermission === 'granted' ? 'Notifications Enabled' : 'Enable Browser Notifications'}
-                </Button>
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className={cn(
+                        "p-2 rounded-xl bg-slate-100 dark:bg-white/5",
+                        globalNotificationsEnabled ? "text-indigo-500" : "text-slate-400"
+                      )}>
+                        {globalNotificationsEnabled ? <Bell className="w-4 h-4" /> : <BellOff className="w-4 h-4" />}
+                      </div>
+                      <div>
+                        <p className="text-sm font-medium text-slate-700 dark:text-slate-200">Global Notifications</p>
+                        <p className="text-[10px] text-slate-500">Enable or disable all alerts</p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setGlobalNotificationsEnabled(!globalNotificationsEnabled)}
+                      className={cn(
+                        "w-10 h-5 rounded-full transition-colors relative",
+                        globalNotificationsEnabled ? "bg-indigo-500" : "bg-slate-300 dark:bg-slate-700"
+                      )}
+                    >
+                      <div className={cn(
+                        "absolute top-1 w-3 h-3 rounded-full bg-white transition-all",
+                        globalNotificationsEnabled ? "left-6" : "left-1"
+                      )} />
+                    </button>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                      <Volume2 className="w-3 h-3" /> Notification Sound
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      {Object.keys(NOTIFICATION_SOUNDS).map((sound) => (
+                        <button
+                          key={sound}
+                          type="button"
+                          onClick={() => {
+                            setNotificationSound(sound);
+                            // Preview sound
+                            const soundUrl = NOTIFICATION_SOUNDS[sound as keyof typeof NOTIFICATION_SOUNDS];
+                            if (soundUrl) {
+                              new Audio(soundUrl).play().catch(() => {});
+                            }
+                          }}
+                          className={cn(
+                            "flex items-center justify-between px-3 py-2 rounded-xl text-xs font-medium transition-all border",
+                            notificationSound === sound 
+                              ? "bg-indigo-500/10 border-indigo-500/30 text-indigo-500" 
+                              : "bg-slate-50 dark:bg-white/5 border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10"
+                          )}
+                        >
+                          <span className="capitalize">{sound}</span>
+                          {notificationSound === sound && <Check className="w-3 h-3" />}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <Button 
+                    type="button" 
+                    variant="outline" 
+                    className="w-full justify-start gap-3 h-12"
+                    onClick={requestNotificationPermission}
+                    disabled={notificationPermission === 'granted'}
+                  >
+                    <div className={cn(
+                      "w-2 h-2 rounded-full",
+                      notificationPermission === 'granted' ? "bg-emerald-500" : "bg-amber-500"
+                    )} />
+                    {notificationPermission === 'granted' ? 'Browser Notifications Enabled' : 'Enable Browser Notifications'}
+                  </Button>
+                </div>
               </div>
               
               <div className="pt-2 space-y-2">
@@ -2501,6 +2625,41 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                     autoFocus
                     disabled={activeRoom.created_by !== user.id}
                   />
+
+                  <div className="pt-4 border-t border-slate-100 dark:border-white/5">
+                    <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-3">Room Notifications</p>
+                    <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5">
+                      <div className="flex items-center gap-3">
+                        <div className={cn(
+                          "p-2 rounded-lg",
+                          mutedRooms.has(activeRoom.id) ? "bg-red-500/10 text-red-500" : "bg-emerald-500/10 text-emerald-500"
+                        )}>
+                          {mutedRooms.has(activeRoom.id) ? <BellOff className="w-4 h-4" /> : <Bell className="w-4 h-4" />}
+                        </div>
+                        <div>
+                          <p className="text-sm font-medium text-slate-700 dark:text-slate-200">
+                            {mutedRooms.has(activeRoom.id) ? 'Muted' : 'Active'}
+                          </p>
+                          <p className="text-[10px] text-slate-500">
+                            {mutedRooms.has(activeRoom.id) ? 'You won\'t receive alerts for this room' : 'You will receive alerts for this room'}
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => toggleRoomMute(activeRoom.id)}
+                        className={cn(
+                          "px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-all",
+                          mutedRooms.has(activeRoom.id) 
+                            ? "bg-emerald-500 text-white shadow-lg shadow-emerald-500/20" 
+                            : "bg-red-500 text-white shadow-lg shadow-red-500/20"
+                        )}
+                      >
+                        {mutedRooms.has(activeRoom.id) ? 'Unmute' : 'Mute'}
+                      </button>
+                    </div>
+                  </div>
+
                   <div className="space-y-2">
                     {activeRoom.created_by === user.id ? (
                       <>
