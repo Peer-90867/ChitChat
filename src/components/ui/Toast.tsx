@@ -7,9 +7,13 @@ interface ToastProps {
   message: string;
   type: 'success' | 'error';
   onClose: () => void;
+  action?: {
+    label: string;
+    onClick: () => void;
+  };
 }
 
-export const Toast = ({ message, type, onClose }: ToastProps) => {
+export const Toast = ({ message, type, onClose, action }: ToastProps) => {
   return (
     <motion.div
       initial={{ opacity: 0, x: 50, scale: 0.9 }}
@@ -37,9 +41,22 @@ export const Toast = ({ message, type, onClose }: ToastProps) => {
           <p className="text-sm font-bold tracking-tight uppercase opacity-60 mb-0.5">
             {type === 'success' ? 'Operation Success' : 'System Error'}
           </p>
-          <p className="text-[13px] font-medium leading-relaxed text-slate-200">
-            {message}
-          </p>
+          <div className="flex items-center justify-between gap-4">
+            <p className="text-[13px] font-medium leading-relaxed text-slate-200">
+              {message}
+            </p>
+            {action && (
+              <button
+                onClick={() => {
+                  action.onClick();
+                  onClose();
+                }}
+                className="px-3 py-1 bg-white/10 hover:bg-white/20 rounded-lg text-xs font-bold transition-all whitespace-nowrap"
+              >
+                {action.label}
+              </button>
+            )}
+          </div>
         </div>
         <button 
           onClick={onClose}

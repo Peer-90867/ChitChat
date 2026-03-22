@@ -85,14 +85,14 @@ const HighlightedText = ({ children, query }: { children: string; query: string 
 
 export const ChatDashboard = ({ user }: { user: any }) => {
   const { theme, toggleTheme } = useTheme();
-  const [toasts, setToasts] = useState<{ id: string; message: string; type: 'success' | 'error' }[]>([]);
+  const [toasts, setToasts] = useState<{ id: string; message: string; type: 'success' | 'error'; action?: { label: string; onClick: () => void } }[]>([]);
 
-  const showToast = (message: string, type: 'success' | 'error' = 'success') => {
+  const showToast = (message: string, type: 'success' | 'error' = 'success', action?: { label: string; onClick: () => void }) => {
     const id = Math.random().toString(36).substring(2, 9);
-    setToasts(prev => [...prev, { id, message, type }]);
+    setToasts(prev => [...prev, { id, message, type, action }]);
     setTimeout(() => {
       setToasts(prev => prev.filter(t => t.id !== id));
-    }, 3000);
+    }, 5000); // Increased to 5s to give time for Undo
   };
 
   const [rooms, setRooms] = useState<Room[]>([]);
@@ -543,12 +543,12 @@ export const ChatDashboard = ({ user }: { user: any }) => {
           }
         });
 
-      // Polling fallback: Refresh messages every 2 seconds (less aggressive)
+      // Polling fallback: Refresh messages every 0.3 seconds as requested
       const pollingInterval = setInterval(() => {
-        if (hasValidSupabase) {
+        if (hasValidSupabase && activeRoom) {
           fetchMessages(activeRoom.id, true);
         }
-      }, 2000);
+      }, 300);
 
       return () => {
         supabase.removeChannel(channel);
@@ -980,17 +980,52 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     return match ? match[0] : null;
   };
 
+  const lastDeletedMessageRef = useRef<Message | null>(null);
+
   const handleDeleteMessage = async () => {
     if (!messageToDeleteId) return;
     
+    const messageToDelete = messages.find(m => m.id === messageToDeleteId);
+    if (!messageToDelete) return;
+
     const { error } = await supabase
       .from('messages')
       .delete()
       .eq('id', messageToDeleteId);
 
     if (!error) {
+      lastDeletedMessageRef.current = messageToDelete;
       setMessageToDeleteId(null);
-      showToast('Message deleted successfully!');
+      showToast('Message deleted', 'success', {
+        label: 'Undo',
+        onClick: async () => {
+          if (lastDeletedMessageRef.current) {
+            const { error: restoreError } = await supabase
+              .from('messages')
+              .insert([{
+                room_id: lastDeletedMessageRef.current.room_id,
+                user_id: lastDeletedMessageRef.current.user_id,
+                content: lastDeletedMessageRef.current.content,
+                audio_url: lastDeletedMessageRef.current.audio_url,
+                image_url: lastDeletedMessageRef.current.image_url,
+                file_url: lastDeletedMessageRef.current.file_url,
+                file_name: lastDeletedMessageRef.current.file_name,
+                file_size: lastDeletedMessageRef.current.file_size,
+                file_type: lastDeletedMessageRef.current.file_type,
+                reply_to_id: lastDeletedMessageRef.current.reply_to_id,
+                is_pinned: lastDeletedMessageRef.current.is_pinned,
+                created_at: lastDeletedMessageRef.current.created_at // Try to keep original timestamp
+              }]);
+            
+            if (restoreError) {
+              showToast('Failed to undo deletion', 'error');
+            } else {
+              showToast('Message restored!');
+              lastDeletedMessageRef.current = null;
+            }
+          }
+        }
+      });
     } else {
       showToast(error.message, 'error');
     }
@@ -1248,9 +1283,14 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     }
   };
 
+  const isFetchingRef = useRef(false);
+
   const fetchMessages = async (roomId: string, isPolling = false, before?: string) => {
+    if (isFetchingRef.current && isPolling) return;
     if (isLoadingMore && before) return;
+    
     if (before) setIsLoadingMore(true);
+    if (isPolling) isFetchingRef.current = true;
 
     try {
       let query = supabase
@@ -1334,6 +1374,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
       }
     } finally {
       if (before) setIsLoadingMore(false);
+      if (isPolling) isFetchingRef.current = false;
     }
   };
 
@@ -1738,9 +1779,25 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   };
 
   const handleSendMessage = async (content: string = newMessage, audioUrl?: string, imageUrl?: string, fileUrl?: string, fileName?: string, fileSize?: number, fileType?: string) => {
+    console.log('handleSendMessage triggered', { content, audioUrl, imageUrl, fileUrl });
     const textContent = typeof content === 'string' ? content : newMessage;
-    if (!textContent.trim() && !audioUrl && !imageUrl && !fileUrl) return;
-    if (!activeRoom) return;
+    
+    if (!textContent.trim() && !audioUrl && !imageUrl && !fileUrl) {
+      console.log('Empty message, returning');
+      return;
+    }
+    
+    if (!activeRoom) {
+      console.log('No active room, returning');
+      showToast('Please select a room first', 'error');
+      return;
+    }
+
+    if (!user) {
+      console.log('No user, returning');
+      showToast('You must be logged in to send messages', 'error');
+      return;
+    }
 
     const currentReplyTo = replyingTo;
     if (!audioUrl && !imageUrl && !fileUrl) {
@@ -1751,6 +1808,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     try {
       const url = extractUrl(textContent);
       
+      console.log('Inserting message into Supabase...');
       const { data, error } = await supabase
         .from('messages')
         .insert([{ 
@@ -1768,19 +1826,27 @@ export const ChatDashboard = ({ user }: { user: any }) => {
         .select()
         .single();
 
-      if (error) throw error;
+      if (error) {
+        console.error('Supabase insert error:', error);
+        throw error;
+      }
 
+      console.log('Message sent successfully', data);
       scrollToBottom(true);
 
       if (url && data) {
         fetchLinkPreview(url).then(async (preview) => {
           if (preview) {
-            await supabase
-              .from('messages')
-              .update({ link_preview: preview })
-              .eq('id', data.id);
+            try {
+              await supabase
+                .from('messages')
+                .update({ link_preview: preview })
+                .eq('id', data.id);
+            } catch (err) {
+              console.error('Failed to update link preview (column might be missing):', err);
+            }
           }
-        });
+        }).catch(err => console.error('Link preview fetch failed:', err));
       }
     } catch (error: any) {
       console.error('Error sending message:', error);
@@ -1807,6 +1873,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
               <Toast 
                 message={t.message} 
                 type={t.type} 
+                action={t.action}
                 onClose={() => setToasts(prev => prev.filter(toast => toast.id !== t.id))} 
               />
             </div>
