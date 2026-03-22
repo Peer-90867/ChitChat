@@ -47,7 +47,8 @@ CREATE TABLE IF NOT EXISTS messages (
   is_pinned BOOLEAN DEFAULT FALSE,
   is_read BOOLEAN DEFAULT FALSE,
   read_by UUID[] DEFAULT '{}',
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW())
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()),
+  updated_at TIMESTAMP WITH TIME ZONE
 );
 
 -- 5. Reactions Table

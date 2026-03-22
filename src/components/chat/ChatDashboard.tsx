@@ -733,6 +733,8 @@ export const ChatDashboard = ({ user }: { user: any }) => {
         setProfile(data);
         setEditUsername(data.username || '');
         setEditStatus(data.status || '');
+        if (data.theme_preference) setChatTheme(data.theme_preference);
+        if (data.wallpaper_url) setChatWallpaper(data.wallpaper_url);
       }
     } catch (error: any) {
       console.error('Error fetching profile:', error);
@@ -803,13 +805,22 @@ export const ChatDashboard = ({ user }: { user: any }) => {
           username: editUsername, 
           status: editStatus,
           avatar_url: avatarUrl,
+          theme_preference: chatTheme,
+          wallpaper_url: chatWallpaper,
           updated_at: new Date().toISOString() 
         })
         .eq('id', user.id);
 
       if (error) throw error;
 
-      setProfile(prev => prev ? { ...prev, username: editUsername, status: editStatus, avatar_url: avatarUrl } : null);
+      setProfile(prev => prev ? { 
+        ...prev, 
+        username: editUsername, 
+        status: editStatus, 
+        avatar_url: avatarUrl,
+        theme_preference: chatTheme,
+        wallpaper_url: chatWallpaper
+      } : null);
       setShowProfileModal(false);
       setAvatarFile(null);
       setAvatarPreview(null);
@@ -2147,12 +2158,22 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                             onlineUsers.has(dm.other_user_profile?.id || '') ? "bg-emerald-500" : "bg-slate-500"
                           )} />
                         </div>
-                        <span className="font-medium truncate">{dm.other_user_profile?.username || 'Unknown'}</span>
-                        {dm.unread_count && dm.unread_count > 0 ? (
-                          <div className="ml-auto bg-indigo-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center shadow-lg shadow-indigo-500/20">
-                            {dm.unread_count}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between">
+                            <span className="font-medium truncate">{dm.other_user_profile?.username || 'Unknown'}</span>
+                            {dm.unread_count && dm.unread_count > 0 && (
+                              <div className="bg-indigo-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center shadow-lg shadow-indigo-500/20">
+                                {dm.unread_count}
+                              </div>
+                            )}
                           </div>
-                        ) : activeRoom?.id === dm.id && (
+                          {dm.other_user_profile?.status && (
+                            <p className="text-[10px] text-slate-500 italic truncate group-hover:text-slate-400 transition-colors">
+                              {dm.other_user_profile.status}
+                            </p>
+                          )}
+                        </div>
+                        {activeRoom?.id === dm.id && (
                           <motion.div 
                             layoutId="activeRoomMobile"
                             className="absolute left-0 w-1 h-6 bg-indigo-500 rounded-r-full"
@@ -2420,7 +2441,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
       {/* Main Chat Area */}
       <main 
         className={cn(
-          "flex-1 flex flex-col w-full min-w-0 relative transition-colors duration-300",
+          "flex-1 flex flex-col w-full min-w-0 relative transition-colors duration-300 overflow-hidden",
           !chatWallpaper && chatTheme === 'default' && "bg-white dark:bg-[#020617]",
           !chatWallpaper && chatTheme === 'minimalist' && "bg-slate-50 dark:bg-black",
           !chatWallpaper && chatTheme === 'dark-blue' && "bg-blue-50 dark:bg-blue-950",
@@ -2429,9 +2450,13 @@ export const ChatDashboard = ({ user }: { user: any }) => {
         style={{
           backgroundImage: chatWallpaper ? `url(${chatWallpaper})` : undefined,
           backgroundSize: 'cover',
-          backgroundPosition: 'center'
+          backgroundPosition: 'center',
+          backgroundAttachment: 'fixed'
         }}
       >
+        {chatWallpaper && (
+          <div className="absolute inset-0 bg-white/20 dark:bg-black/40 pointer-events-none z-0" />
+        )}
         {/* Mobile Global Header - Always visible on mobile */}
         <header className="lg:hidden h-16 px-4 border-b border-slate-200 dark:border-white/5 flex items-center justify-between bg-white/50 dark:bg-[#020617]/50 backdrop-blur-md z-30 sticky top-0 transition-colors duration-300">
           <div className="flex items-center gap-3 min-w-0">
@@ -2728,7 +2753,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
             <div 
               ref={messagesContainerRef}
               onScroll={handleScroll}
-              className="flex-1 overflow-y-auto p-6 space-y-1 scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800"
+              className="flex-1 overflow-y-auto p-6 space-y-1 scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800 relative z-10"
             >
               {isLoadingMore && (
                 <div className="flex justify-center py-4">
@@ -3011,9 +3036,6 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                                   </div>
                                 )}
                                 
-                                {msg.updated_at && (
-                                  <span className="text-[9px] opacity-50 italic">(edited)</span>
-                                )}
                                 {msg.link_preview && (
                                   <LinkPreview preview={msg.link_preview} />
                                 )}
@@ -3023,8 +3045,15 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                             {/* Message Footer (Time & Read Receipts) */}
                             <div className={cn(
                               "flex items-center gap-1 mt-1 text-[10px]",
-                              isMe ? "justify-end text-indigo-200" : "justify-end text-slate-400 dark:text-slate-500"
+                              isMe ? "justify-end text-indigo-200" : "justify-end text-slate-400 dark:text-slate-500",
+                              shouldGroup ? "opacity-0 group-hover/bubble:opacity-100 transition-opacity" : "opacity-100"
                             )}>
+                              {msg.updated_at && (
+                                <div className="flex items-center gap-0.5 opacity-70" title={`Edited: ${format(new Date(msg.updated_at), 'HH:mm')}`}>
+                                  <Pencil className="w-2.5 h-2.5" />
+                                  <span className="italic">edited</span>
+                                </div>
+                              )}
                               <span>{format(new Date(msg.created_at), 'HH:mm')}</span>
                               {isMe && activeRoom?.is_direct && (
                                 msg.is_read ? (
@@ -3202,7 +3231,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
 
             {/* Input Bar */}
             <div className={cn(
-              "p-6",
+              "p-6 relative z-10",
               chatWallpaper && "bg-white/50 dark:bg-black/50 backdrop-blur-md border-t border-slate-200/50 dark:border-white/10"
             )}>
               <div className="relative">
@@ -3463,8 +3492,10 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                         <div className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-white dark:border-slate-900 ${onlineUsers.has(member.id) ? 'bg-emerald-500' : 'bg-slate-400'}`} />
                       </div>
                       <div className="flex flex-col">
-                        <span className="text-sm font-medium text-slate-600 dark:text-slate-400 group-hover:text-slate-900 dark:group-hover:text-slate-200 transition-colors flex items-center gap-2">
-                          {member.username || 'Unknown'}
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium text-slate-600 dark:text-slate-400 group-hover:text-slate-900 dark:group-hover:text-slate-200 transition-colors">
+                            {member.username || 'Unknown'}
+                          </span>
                           <span className={cn(
                             "text-[10px] font-medium",
                             onlineUsers.has(member.id) ? "text-emerald-500" : "text-slate-400"
@@ -3477,12 +3508,11 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                           {member.id === user.id && (
                             <span className="text-[8px] bg-indigo-500/20 text-indigo-400 px-1.5 py-0.5 rounded-md font-bold uppercase tracking-tighter">You</span>
                           )}
-                        </span>
-                        {activeRoom.created_by === member.id && (
-                          <span className="text-[9px] text-amber-500 font-bold uppercase tracking-widest">Owner</span>
-                        )}
+                        </div>
                         {member.status && (
-                          <span className="text-[10px] text-slate-500 dark:text-slate-400 italic truncate max-w-[120px]">{member.status}</span>
+                          <p className="text-[10px] text-slate-500 dark:text-slate-500 italic truncate max-w-[150px]">
+                            {member.status}
+                          </p>
                         )}
                       </div>
                     </div>
@@ -3672,12 +3702,23 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                 value={editUsername}
                 onChange={(e) => setEditUsername(e.target.value)}
               />
-              <Input 
-                label="Status" 
-                placeholder="e.g. 🌙 Sleeping, 💻 Working" 
-                value={editStatus}
-                onChange={(e) => setEditStatus(e.target.value)}
-              />
+              <div className="relative">
+                <Input 
+                  label="Status" 
+                  placeholder="e.g. 🌙 Sleeping, 💻 Working" 
+                  value={editStatus}
+                  onChange={(e) => setEditStatus(e.target.value)}
+                />
+                {editStatus && (
+                  <button
+                    type="button"
+                    onClick={() => setEditStatus('')}
+                    className="absolute right-3 top-[34px] text-[10px] font-bold text-slate-400 hover:text-red-400 uppercase tracking-wider transition-colors"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
 
               <div className="pt-4 border-t border-slate-100 dark:border-white/5">
                 <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest mb-3">Notifications</p>
