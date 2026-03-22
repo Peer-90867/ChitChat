@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS room_members (
 CREATE TABLE IF NOT EXISTS messages (
   id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
   room_id UUID REFERENCES rooms(id) ON DELETE CASCADE,
-  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+  user_id UUID REFERENCES profiles(id) ON DELETE CASCADE,
   content TEXT,
   image_url TEXT,
   audio_url TEXT,

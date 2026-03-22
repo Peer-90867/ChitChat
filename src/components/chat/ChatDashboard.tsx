@@ -417,10 +417,18 @@ export const ChatDashboard = ({ user }: { user: any }) => {
             if (newMessage.reply_to_id) {
               const { data: replyData } = await supabase
                 .from('messages')
-                .select('*, profiles(*)')
+                .select('*')
                 .eq('id', newMessage.reply_to_id)
                 .single();
-              replyToMessage = replyData;
+              
+              if (replyData) {
+                const { data: replyProfile } = await supabase
+                  .from('profiles')
+                  .select('*')
+                  .eq('id', replyData.user_id)
+                  .single();
+                replyToMessage = { ...replyData, profiles: replyProfile };
+              }
             }
             
             setMessages(prev => {
@@ -1298,7 +1306,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
         .select(`
           *,
           reactions (*),
-          reply_to_message:reply_to_id(*, profiles(*))
+          reply_to_message:reply_to_id(*)
         `)
         .eq('room_id', roomId)
         .order('created_at', { ascending: false })
@@ -1314,19 +1322,35 @@ export const ChatDashboard = ({ user }: { user: any }) => {
       
       if (messagesData) {
         const chronMessages = [...messagesData].reverse();
-        const userIds = [...new Set(messagesData.map(m => m.user_id))];
+        
+        // Collect all user IDs from both messages and reply-to messages
+        const userIds = new Set<string>();
+        messagesData.forEach(m => {
+          if (m.user_id) userIds.add(m.user_id);
+          if (m.reply_to_message?.user_id) userIds.add(m.reply_to_message.user_id);
+        });
         
         const { data: profilesData, error: profilesError } = await supabase
           .from('profiles')
           .select('*')
-          .in('id', userIds);
+          .in('id', Array.from(userIds));
           
         if (profilesError) throw profilesError;
         
-        const messagesWithProfiles = chronMessages.map(m => ({
-          ...m,
-          profiles: profilesData?.find(p => p.id === m.user_id)
-        }));
+        const messagesWithProfiles = chronMessages.map(m => {
+          const profile = profilesData?.find(p => p.id === m.user_id);
+          const replyToProfile = m.reply_to_message 
+            ? profilesData?.find(p => p.id === m.reply_to_message.user_id)
+            : null;
+            
+          return {
+            ...m,
+            profiles: profile,
+            reply_to_message: m.reply_to_message 
+              ? { ...m.reply_to_message, profiles: replyToProfile }
+              : null
+          };
+        });
         
         if (before) {
           const container = messagesContainerRef.current;
