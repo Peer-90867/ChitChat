@@ -437,8 +437,13 @@ export const ChatDashboard = ({ user }: { user: any }) => {
               return [...prev, { ...newMessage, profiles: profileData, reply_to_message: replyToMessage }];
             });
 
-            // Mark as read if it's a DM and we're the recipient
+            // Mark as delivered if it's a DM and we're the recipient
             if (activeRoom.is_direct && newMessage.user_id !== user.id) {
+              await supabase
+                .from('messages')
+                .update({ is_delivered: true })
+                .eq('id', newMessage.id);
+              
               markMessagesAsRead(activeRoom.id);
             }
           }
@@ -593,6 +598,14 @@ export const ChatDashboard = ({ user }: { user: any }) => {
             .select('username, avatar_url')
             .eq('id', newMessage.user_id)
             .single();
+
+          // Mark as delivered if it's a DM and we're the recipient
+          if (room.is_direct && newMessage.user_id !== user.id) {
+            await supabase
+              .from('messages')
+              .update({ is_delivered: true })
+              .eq('id', newMessage.id);
+          }
 
           const senderName = profileData?.username || 'Someone';
           const roomName = room.name || 'a room';
@@ -896,7 +909,11 @@ export const ChatDashboard = ({ user }: { user: any }) => {
 
     const { error } = await supabase
       .from('messages')
-      .update({ is_read: true })
+      .update({ 
+        is_read: true,
+        is_delivered: true,
+        read_by: [user.id]
+      })
       .eq('room_id', roomId)
       .neq('user_id', user.id)
       .eq('is_read', false);
@@ -2580,6 +2597,19 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                         </button>
                         <button
                           onClick={() => {
+                            toggleRoomMute(activeRoom.id);
+                            setShowMobileRoomMenu(false);
+                          }}
+                          className={cn(
+                            "w-full flex items-center gap-3 px-4 py-2.5 text-sm transition-colors",
+                            mutedRooms.has(activeRoom.id) ? "text-red-400 hover:bg-red-500/10" : "text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+                          )}
+                        >
+                          {mutedRooms.has(activeRoom.id) ? <BellOff className="w-4 h-4" /> : <Bell className="w-4 h-4" />}
+                          {mutedRooms.has(activeRoom.id) ? 'Unmute Room' : 'Mute Room'}
+                        </button>
+                        <button
+                          onClick={() => {
                             setEditRoomName(activeRoom.name);
                             setShowRoomSettingsModal(true);
                             setShowMobileRoomMenu(false);
@@ -2734,6 +2764,18 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                     )}
                   >
                     <User className="w-5 h-5" />
+                  </Button>
+                  <Button 
+                    variant="ghost" 
+                    size="icon" 
+                    onClick={() => toggleRoomMute(activeRoom.id)}
+                    className={cn(
+                      "transition-colors",
+                      mutedRooms.has(activeRoom.id) ? "text-red-400 bg-red-500/10 hover:bg-red-500/20" : "text-slate-500 dark:text-slate-400"
+                    )}
+                    title={mutedRooms.has(activeRoom.id) ? "Unmute Room" : "Mute Room"}
+                  >
+                    {mutedRooms.has(activeRoom.id) ? <BellOff className="w-5 h-5" /> : <Bell className="w-5 h-5" />}
                   </Button>
                   <Button 
                     variant="ghost" 
@@ -3056,11 +3098,15 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                               )}
                               <span>{format(new Date(msg.created_at), 'HH:mm')}</span>
                               {isMe && activeRoom?.is_direct && (
-                                msg.is_read ? (
-                                  <CheckCheck className="w-3 h-3 text-indigo-300" />
-                                ) : (
-                                  <Check className="w-3 h-3 opacity-70" />
-                                )
+                                <div className="flex items-center">
+                                  {msg.is_read || (msg.read_by && msg.read_by.length > 0) ? (
+                                    <CheckCheck className="w-3 h-3 text-sky-400" />
+                                  ) : msg.is_delivered ? (
+                                    <CheckCheck className="w-3 h-3 opacity-70" />
+                                  ) : (
+                                    <Check className="w-3 h-3 opacity-70" />
+                                  )}
+                                </div>
                               )}
                             </div>
                           </div>
@@ -3838,6 +3884,41 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                           {notificationSound === sound && <Check className="w-3 h-3" />}
                         </button>
                       ))}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                      <VolumeX className="w-3 h-3" /> Muted Rooms
+                    </label>
+                    <div className="space-y-1.5 max-h-[120px] overflow-y-auto pr-1 scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800">
+                      {rooms.map((room) => (
+                        <div key={room.id} className="flex items-center justify-between p-2 rounded-lg bg-slate-50 dark:bg-white/5 border border-transparent hover:border-slate-200 dark:hover:border-white/10 transition-all">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <div className="w-6 h-6 rounded-md bg-slate-200 dark:bg-slate-800 flex items-center justify-center text-[10px] font-bold text-slate-500">
+                              {room.is_direct ? (room.other_user_profile?.username?.[0] || '?') : (room.name?.[0] || '#')}
+                            </div>
+                            <span className="text-xs text-slate-600 dark:text-slate-300 truncate">
+                              {room.is_direct ? room.other_user_profile?.username : room.name}
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => toggleRoomMute(room.id)}
+                            className={cn(
+                              "px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wider transition-all",
+                              mutedRooms.has(room.id)
+                                ? "bg-red-500/10 text-red-500 hover:bg-red-500/20"
+                                : "bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400 hover:bg-slate-300 dark:hover:bg-slate-600"
+                            )}
+                          >
+                            {mutedRooms.has(room.id) ? 'Muted' : 'Mute'}
+                          </button>
+                        </div>
+                      ))}
+                      {rooms.length === 0 && (
+                        <p className="text-[10px] text-slate-500 italic text-center py-2">No rooms joined yet</p>
+                      )}
                     </div>
                   </div>
 

@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS messages (
   reply_to_id UUID REFERENCES messages(id) ON DELETE SET NULL,
   is_pinned BOOLEAN DEFAULT FALSE,
   is_read BOOLEAN DEFAULT FALSE,
+  is_delivered BOOLEAN DEFAULT FALSE,
   read_by UUID[] DEFAULT '{}',
   created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()),
   updated_at TIMESTAMP WITH TIME ZONE

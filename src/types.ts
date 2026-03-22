@@ -52,6 +52,7 @@ export interface Message {
   created_at: string;
   updated_at?: string;
   is_read?: boolean;
+  is_delivered?: boolean;
   profiles?: Profile;
   reactions?: Reaction[];
 }
