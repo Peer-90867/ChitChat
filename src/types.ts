@@ -5,7 +5,29 @@ export interface Profile {
   status?: string;
   wallpaper_url?: string;
   theme_preference?: string;
+  bio?: string;
+  last_seen?: string;
   updated_at?: string;
+}
+
+export interface Story {
+  id: string;
+  user_id: string;
+  media_url: string;
+  media_type: 'image' | 'video';
+  caption?: string;
+  created_at: string;
+  expires_at: string;
+  profiles?: Profile;
+  views?: StoryView[];
+}
+
+export interface StoryView {
+  id: string;
+  story_id: string;
+  user_id: string;
+  viewed_at: string;
+  profiles?: Profile;
 }
 
 export interface Room {
@@ -13,6 +35,7 @@ export interface Room {
   name?: string;
   code?: string;
   is_direct?: boolean;
+  vanish_mode?: boolean;
   created_by: string;
   created_at: string;
   other_user_profile?: Profile; // Virtual property for DMs
@@ -42,6 +65,7 @@ export interface Message {
   is_pinned?: boolean;
   is_starred?: boolean;
   is_bookmarked?: boolean;
+  is_forwarded?: boolean;
   reply_to_id?: string;
   reply_to?: string;
   reply_to_message?: Message;

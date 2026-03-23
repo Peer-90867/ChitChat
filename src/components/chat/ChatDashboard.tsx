@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useInView } from 'react-intersection-observer';
 import { supabase, hasValidSupabase, ensureBucketExists } from '@/src/lib/supabase';
-import { Room, Message, Profile } from '@/src/types';
+import { Room, Message, Profile, Story } from '@/src/types';
 import { cn } from '@/src/lib/utils';
+import { AudioPlayer } from './AudioPlayer';
+import { VideoCall } from './VideoCall';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { 
@@ -48,7 +50,10 @@ import {
   VolumeX,
   CheckCheck,
   Filter,
+  Eye,
+  EyeOff,
   Reply,
+  Forward,
   CornerUpLeft,
   Palette,
   Video,
@@ -70,20 +75,41 @@ import getCroppedImg from '@/src/lib/cropImage';
 const generateRoomCode = customAlphabet('123456789ABCDEFGHJKLMNPQRSTUVWXYZ', 6);
 
 const HighlightedText = ({ children, query }: { children: string; query: string }) => {
-  if (!query.trim()) return <>{children}</>;
-  const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const parts = children.split(new RegExp(`(${escapedQuery})`, 'gi'));
-  return (
-    <>
-      {parts.map((part, i) =>
-        part.toLowerCase() === query.toLowerCase() ? (
-          <mark key={i} className="bg-yellow-200 dark:bg-yellow-800 text-inherit rounded px-0.5">{part}</mark>
-        ) : (
-          part
-        )
-      )}
-    </>
-  );
+  if (!children) return null;
+  
+  // First handle search query highlighting
+  let parts: (string | React.ReactNode)[] = [children];
+  
+  if (query.trim()) {
+    const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(`(${escapedQuery})`, 'gi');
+    
+    parts = parts.flatMap(part => {
+      if (typeof part !== 'string') return part;
+      const subParts = part.split(regex);
+      return subParts.map((subPart, i) => 
+        subPart.toLowerCase() === query.toLowerCase() ? (
+          <mark key={`search-${i}`} className="bg-yellow-200 dark:bg-yellow-800 text-inherit rounded px-0.5">{subPart}</mark>
+        ) : subPart
+      );
+    });
+  }
+
+  // Then handle mentions highlighting (@username)
+  parts = parts.flatMap((part, i) => {
+    if (typeof part !== 'string') return part;
+    const mentionRegex = /(@\w+)/g;
+    const subParts = part.split(mentionRegex);
+    return subParts.map((subPart, j) => 
+      subPart.startsWith('@') ? (
+        <span key={`mention-${i}-${j}`} className="text-indigo-500 dark:text-indigo-400 font-bold hover:underline cursor-pointer">
+          {subPart}
+        </span>
+      ) : subPart
+    );
+  });
+
+  return <>{parts}</>;
 };
 
 export const ChatDashboard = ({ user }: { user: any }) => {
@@ -99,7 +125,13 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   };
 
   const [rooms, setRooms] = useState<Room[]>([]);
-  const [sortBy, setSortBy] = useState<'newest' | 'unread'>('unread');
+  const [sortBy, setSortBy] = useState<'newest' | 'unread' | 'alpha'>(() => {
+    return (localStorage.getItem('roomSortOrder') as any) || 'newest';
+  });
+
+  useEffect(() => {
+    localStorage.setItem('roomSortOrder', sortBy);
+  }, [sortBy]);
   const [activeRoom, setActiveRoom] = useState<Room | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [members, setMembers] = useState<Profile[]>([]);
@@ -118,6 +150,8 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const videoElementRef = useRef<HTMLVideoElement | null>(null);
   const [showVideoPreview, setShowVideoPreview] = useState(false);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  const [activeCallUrl, setActiveCallUrl] = useState<string | null>(null);
+  const [isThreadCollapsed, setIsThreadCollapsed] = useState(false);
   const [showStorageGuide, setShowStorageGuide] = useState(false);
   const [copied, setCopied] = useState(false);
   const [showMobileRoomMenu, setShowMobileRoomMenu] = useState(false);
@@ -132,6 +166,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const [joinCode, setJoinCode] = useState('');
   const [editUsername, setEditUsername] = useState('');
   const [editStatus, setEditStatus] = useState('');
+  const [editBio, setEditBio] = useState('');
   const [newMessage, setNewMessage] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
@@ -139,6 +174,9 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const [globalSearchQuery, setGlobalSearchQuery] = useState('');
   const [globalSearchResults, setGlobalSearchResults] = useState<Message[]>([]);
   const [isSearchingGlobal, setIsSearchingGlobal] = useState(false);
+  const [showMentions, setShowMentions] = useState(false);
+  const [mentionFilter, setMentionFilter] = useState('');
+  const [mentionIndex, setMentionIndex] = useState(-1);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isLeaving, setIsLeaving] = useState(false);
   const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
@@ -146,6 +184,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const [activeEmojiPicker, setActiveEmojiPicker] = useState<string | null>(null);
   const [showFullEmojiPicker, setShowFullEmojiPicker] = useState<string | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [showSaveConfirmation, setShowSaveConfirmation] = useState(false);
   const [editMessageContent, setEditMessageContent] = useState('');
   const [pendingEditMessageId, setPendingEditMessageId] = useState<string | null>(null);
   const [showEditConfirmation, setShowEditConfirmation] = useState(false);
@@ -170,6 +209,11 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const recordingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  
+  const [isRecordingCall, setIsRecordingCall] = useState(false);
+  const [showRecordConsent, setShowRecordConsent] = useState(false);
+  const callMediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const callAudioChunksRef = useRef<Blob[]>([]);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; messageId: string } | null>(null);
   const [roomContextMenu, setRoomContextMenu] = useState<{ x: number; y: number; roomId: string } | null>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -187,6 +231,11 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const [hasMore, setHasMore] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
+  const [forwardingMessage, setForwardingMessage] = useState<Message | null>(null);
+  const [showForwardModal, setShowForwardModal] = useState(false);
+  const [stories, setStories] = useState<Story[]>([]);
+  const [showStoryModal, setShowStoryModal] = useState<Story | null>(null);
+  const [showCreateStoryModal, setShowCreateStoryModal] = useState(false);
   const MESSAGES_PER_PAGE = 30;
 
   const groupRooms = rooms.filter(r => !r.is_direct);
@@ -213,6 +262,9 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   });
   const [notificationSound, setNotificationSound] = useState<string>(() => {
     return localStorage.getItem('notificationSound') || 'pop';
+  });
+  const [mutedRoomSound, setMutedRoomSound] = useState<string>(() => {
+    return localStorage.getItem('mutedRoomSound') || 'none';
   });
   const [chatTheme, setChatTheme] = useState<string>(() => {
     return localStorage.getItem('chatTheme') || 'default';
@@ -242,12 +294,32 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   }, [notificationSound]);
 
   useEffect(() => {
+    localStorage.setItem('mutedRoomSound', mutedRoomSound);
+  }, [mutedRoomSound]);
+
+  useEffect(() => {
     localStorage.setItem('chatTheme', chatTheme);
   }, [chatTheme]);
 
   useEffect(() => {
     localStorage.setItem('chatWallpaper', chatWallpaper);
   }, [chatWallpaper]);
+
+  useEffect(() => {
+    if (!user) return;
+
+    const updateLastSeen = async () => {
+      await supabase
+        .from('profiles')
+        .update({ last_seen: new Date().toISOString() })
+        .eq('id', user.id);
+    };
+
+    updateLastSeen();
+    const interval = setInterval(updateLastSeen, 60000); // Update every minute
+
+    return () => clearInterval(interval);
+  }, [user]);
 
   const NOTIFICATION_SOUNDS = {
     none: null,
@@ -258,7 +330,15 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   };
 
   const playNotificationSound = (roomId?: string) => {
-    const soundKey = (roomId && roomSounds[roomId]) || notificationSound;
+    let soundKey = notificationSound;
+    if (roomId && mutedRooms.has(roomId)) {
+      soundKey = mutedRoomSound;
+    } else if (roomId && roomSounds[roomId]) {
+      soundKey = roomSounds[roomId];
+    }
+    
+    if (soundKey === 'none') return;
+    
     const soundUrl = NOTIFICATION_SOUNDS[soundKey as keyof typeof NOTIFICATION_SOUNDS];
     if (soundUrl) {
       const audio = new Audio(soundUrl);
@@ -348,9 +428,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     const dismissed = localStorage.getItem('notificationBannerDismissed');
     return dismissed !== 'true' && typeof Notification !== 'undefined' && Notification.permission === 'default';
   });
-  const [showMentions, setShowMentions] = useState(false);
   const [mentionQuery, setMentionQuery] = useState('');
-  const [mentionIndex, setMentionIndex] = useState(0);
   const [playingAudioId, setPlayingAudioId] = useState<string | null>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const activeChannelRef = useRef<any>(null);
@@ -369,6 +447,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   useEffect(() => {
     fetchProfile();
     fetchRooms();
+    fetchStories();
     
     // Set initial members visibility
     if (window.innerWidth >= 1024) {
@@ -800,6 +879,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
         setProfile(data);
         setEditUsername(data.username || '');
         setEditStatus(data.status || '');
+        setEditBio(data.bio || '');
         if (data.theme_preference) setChatTheme(data.theme_preference);
         if (data.wallpaper_url) setChatWallpaper(data.wallpaper_url);
       }
@@ -906,6 +986,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
         .update({ 
           username: editUsername, 
           status: editStatus,
+          bio: editBio,
           avatar_url: avatarUrl,
           theme_preference: chatTheme,
           wallpaper_url: wallpaperUrl || chatWallpaper,
@@ -919,6 +1000,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
         ...prev, 
         username: editUsername, 
         status: editStatus, 
+        bio: editBio,
         avatar_url: avatarUrl,
         theme_preference: chatTheme,
         wallpaper_url: wallpaperUrl || chatWallpaper
@@ -1015,6 +1097,61 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     } catch (error: any) {
       console.error('Error kicking member:', error);
       showToast(error.message || 'Failed to kick member', 'error');
+    }
+  };
+
+  const handlePostStory = async (mediaUrl: string, mediaType: 'image' | 'video', caption?: string) => {
+    if (!user) return;
+    try {
+      const { error } = await supabase
+        .from('stories')
+        .insert([{
+          user_id: user.id,
+          media_url: mediaUrl,
+          media_type: mediaType,
+          caption
+        }]);
+
+      if (error) throw error;
+      showToast('Story posted!');
+      fetchStories();
+      setShowCreateStoryModal(false);
+    } catch (error) {
+      console.error('Error posting story:', error);
+      showToast('Failed to post story', 'error');
+    }
+  };
+
+  const handleViewStory = async (storyId: string) => {
+    if (!user) return;
+    try {
+      const { error } = await supabase
+        .from('story_views')
+        .insert([{
+          story_id: storyId,
+          user_id: user.id
+        }]);
+
+      if (error && error.code !== '23505') throw error; // Ignore unique constraint error
+      fetchStories();
+    } catch (error) {
+      console.error('Error viewing story:', error);
+    }
+  };
+
+  const toggleVanishMode = async () => {
+    if (!activeRoom) return;
+    try {
+      const { error } = await supabase
+        .from('rooms')
+        .update({ vanish_mode: !activeRoom.vanish_mode })
+        .eq('id', activeRoom.id);
+      
+      if (error) throw error;
+      showToast(`Vanish mode ${!activeRoom.vanish_mode ? 'enabled' : 'disabled'}`);
+    } catch (error) {
+      console.error('Error toggling vanish mode:', error);
+      showToast('Failed to toggle vanish mode', 'error');
     }
   };
 
@@ -1293,11 +1430,17 @@ export const ChatDashboard = ({ user }: { user: any }) => {
         // Sort rooms based on sortBy preference
         const sortedRooms = [...formattedRooms].sort((a, b) => {
           if (sortBy === 'unread') {
-            // Unread messages first
             if (a.unread_count !== b.unread_count) {
               return (b.unread_count || 0) - (a.unread_count || 0);
             }
           }
+          
+          if (sortBy === 'alpha') {
+            const nameA = (a.is_direct ? a.other_user_profile?.username : a.name) || '';
+            const nameB = (b.is_direct ? b.other_user_profile?.username : b.name) || '';
+            return nameA.localeCompare(nameB);
+          }
+
           // Then by last message activity
           const timeA = new Date(a.last_message_at || a.created_at).getTime();
           const timeB = new Date(b.last_message_at || b.created_at).getTime();
@@ -1316,6 +1459,26 @@ export const ChatDashboard = ({ user }: { user: any }) => {
       showToast('Failed to load your rooms', 'error');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchStories = async () => {
+    if (!user) return;
+    try {
+      const { data, error } = await supabase
+        .from('stories')
+        .select(`
+          *,
+          profiles (*),
+          story_views (*)
+        `)
+        .gt('expires_at', new Date().toISOString())
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      setStories(data || []);
+    } catch (error) {
+      console.error('Error fetching stories:', error);
     }
   };
 
@@ -1916,6 +2079,61 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     }
   };
 
+  const startCallRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: true
+      });
+      
+      const mediaRecorder = new MediaRecorder(stream);
+      callMediaRecorderRef.current = mediaRecorder;
+      callAudioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          callAudioChunksRef.current.push(e.data);
+        }
+      };
+
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(callAudioChunksRef.current, { type: 'video/webm' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `video-call-recording-${new Date().toISOString()}.webm`;
+        a.click();
+        URL.revokeObjectURL(url);
+        setIsRecordingCall(false);
+        callAudioChunksRef.current = [];
+        
+        // Stop all tracks
+        stream.getTracks().forEach(track => track.stop());
+      };
+
+      mediaRecorder.start();
+      setIsRecordingCall(true);
+      setShowRecordConsent(false);
+      
+      // Handle user stopping screen share via browser UI
+      stream.getVideoTracks()[0].onended = () => {
+        if (mediaRecorder.state !== 'inactive') {
+          mediaRecorder.stop();
+        }
+      };
+    } catch (err) {
+      console.error('Error starting screen recording:', err);
+      showToast('Failed to start recording. Please ensure you have granted permission.', 'error');
+      setShowRecordConsent(false);
+    }
+  };
+
+  const stopCallRecording = () => {
+    if (callMediaRecorderRef.current && callMediaRecorderRef.current.state !== 'inactive') {
+      callMediaRecorderRef.current.stop();
+    }
+  };
+
   const handleCopyMessage = (content: string) => {
     navigator.clipboard.writeText(content);
     showToast('Message copied to clipboard');
@@ -1938,29 +2156,29 @@ export const ChatDashboard = ({ user }: { user: any }) => {
       const query = searchQuery.toLowerCase();
       
       // Parse advanced search tokens
-      const fromMatch = query.match(/from:(\w+)/);
-      const hasMatch = query.match(/has:(link|file|image|audio)/);
-      const isMatch = query.match(/is:(pinned|starred|bookmarked)/);
+      const fromMatches = [...query.matchAll(/from:(\w+)/g)];
+      const hasMatches = [...query.matchAll(/has:(link|file|image|audio)/g)];
+      const isMatches = [...query.matchAll(/is:(pinned|starred|bookmarked)/g)];
       
       // Remove tokens from text search
       const textQuery = query
-        .replace(/from:\w+/, '')
-        .replace(/has:(link|file|image|audio)/, '')
-        .replace(/is:(pinned|starred|bookmarked)/, '')
+        .replace(/from:\w+/g, '')
+        .replace(/has:(link|file|image|audio)/g, '')
+        .replace(/is:(pinned|starred|bookmarked)/g, '')
         .trim();
 
-      if (fromMatch) {
-        matchesSearch = matchesSearch && m.profiles?.username?.toLowerCase().includes(fromMatch[1]);
+      for (const match of fromMatches) {
+        matchesSearch = matchesSearch && m.profiles?.username?.toLowerCase().includes(match[1]);
       }
-      if (hasMatch) {
-        const type = hasMatch[1];
+      for (const match of hasMatches) {
+        const type = match[1];
         if (type === 'link') matchesSearch = matchesSearch && !!m.link_preview;
         if (type === 'file') matchesSearch = matchesSearch && !!m.file_url;
         if (type === 'image') matchesSearch = matchesSearch && !!m.image_url;
         if (type === 'audio') matchesSearch = matchesSearch && !!m.audio_url;
       }
-      if (isMatch) {
-        const type = isMatch[1];
+      for (const match of isMatches) {
+        const type = match[1];
         if (type === 'pinned') matchesSearch = matchesSearch && !!m.is_pinned;
         if (type === 'starred') matchesSearch = matchesSearch && !!m.is_starred;
         if (type === 'bookmarked') matchesSearch = matchesSearch && !!m.is_bookmarked;
@@ -2108,6 +2326,12 @@ export const ChatDashboard = ({ user }: { user: any }) => {
       } else if (e.key === 'Escape') {
         setShowMentions(false);
       }
+      return;
+    }
+
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleSendMessage();
     }
   };
 
@@ -2204,6 +2428,35 @@ export const ChatDashboard = ({ user }: { user: any }) => {
         break;
       default:
         break;
+    }
+  };
+
+  const handleForwardMessage = async (roomId: string) => {
+    if (!forwardingMessage || !user) return;
+
+    try {
+      const { error } = await supabase
+        .from('messages')
+        .insert([{ 
+          room_id: roomId, 
+          user_id: user.id, 
+          content: forwardingMessage.content,
+          audio_url: forwardingMessage.audio_url,
+          image_url: forwardingMessage.image_url,
+          file_url: forwardingMessage.file_url,
+          file_name: forwardingMessage.file_name,
+          file_size: forwardingMessage.file_size,
+          file_type: forwardingMessage.file_type,
+          is_forwarded: true
+        }]);
+
+      if (error) throw error;
+      showToast('Message forwarded!');
+      setShowForwardModal(false);
+      setForwardingMessage(null);
+    } catch (error) {
+      console.error('Error forwarding message:', error);
+      showToast('Failed to forward message', 'error');
     }
   };
 
@@ -2406,6 +2659,69 @@ export const ChatDashboard = ({ user }: { user: any }) => {
               </div>
 
               <div className="flex-1 overflow-y-auto p-4 space-y-6">
+                {/* Stories Section */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between px-3">
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em]">Stories</span>
+                    <button 
+                      onClick={() => setShowCreateStoryModal(true)}
+                      className="p-1 text-indigo-400 hover:bg-indigo-500/10 rounded-md transition-all"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  <div className="flex gap-3 overflow-x-auto pb-2 px-1 scrollbar-none">
+                    <button 
+                      onClick={() => setShowCreateStoryModal(true)}
+                      className="flex-shrink-0 flex flex-col items-center gap-1.5 group"
+                    >
+                      <div className="relative">
+                        <div className="w-14 h-14 rounded-full border-2 border-dashed border-slate-700 flex items-center justify-center group-hover:border-indigo-500 transition-colors">
+                          {profile?.avatar_url ? (
+                            <img src={profile.avatar_url} alt="" className="w-12 h-12 rounded-full object-cover" />
+                          ) : (
+                            <User className="w-6 h-6 text-slate-600" />
+                          )}
+                        </div>
+                        <div className="absolute bottom-0 right-0 bg-indigo-500 text-white rounded-full p-0.5 border-2 border-slate-900">
+                          <Plus className="w-3 h-3" />
+                        </div>
+                      </div>
+                      <span className="text-[10px] font-medium text-slate-500 group-hover:text-slate-300">Your Story</span>
+                    </button>
+                    {Array.from(new Set(stories.map(s => s.user_id))).map(userId => {
+                      const userStories = stories.filter(s => s.user_id === userId);
+                      const storyUser = userStories[0].profiles;
+                      const allViewed = userStories.every(s => s.views?.some(v => v.user_id === user.id));
+                      
+                      return (
+                        <button 
+                          key={userId}
+                          onClick={() => {
+                            setShowStoryModal(userStories[0]);
+                            handleViewStory(userStories[0].id);
+                          }}
+                          className="flex-shrink-0 flex flex-col items-center gap-1.5 group"
+                        >
+                          <div className={cn(
+                            "p-0.5 rounded-full border-2 transition-all group-hover:scale-105",
+                            allViewed ? "border-slate-700" : "border-indigo-500"
+                          )}>
+                            <div className="w-12 h-12 rounded-full bg-slate-800 flex items-center justify-center text-xs font-bold overflow-hidden border-2 border-slate-900">
+                              {storyUser?.avatar_url ? (
+                                <img src={storyUser.avatar_url} alt="" className="w-full h-full object-cover" />
+                              ) : storyUser?.username?.[0]?.toUpperCase() || '?'}
+                            </div>
+                          </div>
+                          <span className="text-[10px] font-medium text-slate-500 group-hover:text-slate-300 truncate w-14 text-center">
+                            {storyUser?.username || 'User'}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
                 {/* Quick Actions */}
                 <div className="grid grid-cols-2 gap-3">
                   <button 
@@ -2435,12 +2751,12 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                 <div className="px-3 py-2 flex items-center justify-between">
                   <span className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em]">Sort By</span>
                   <button 
-                    onClick={() => setSortBy(prev => prev === 'newest' ? 'unread' : 'newest')}
-                    aria-label={`Sort by ${sortBy === 'unread' ? 'newest' : 'unread'}`}
+                    onClick={() => setSortBy(prev => prev === 'newest' ? 'unread' : prev === 'unread' ? 'alpha' : 'newest')}
+                    aria-label={`Sort by ${sortBy === 'unread' ? 'newest' : sortBy === 'alpha' ? 'unread' : 'alpha'}`}
                     className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-slate-800/50 text-[10px] font-bold text-indigo-400 hover:bg-slate-800 transition-all border border-indigo-500/20"
                   >
                     <Filter className="w-3 h-3" />
-                    <span className="uppercase">{sortBy === 'unread' ? 'Unread First' : 'Newest First'}</span>
+                    <span className="uppercase">{sortBy === 'unread' ? 'Unread First' : sortBy === 'alpha' ? 'Alphabetical' : 'Newest First'}</span>
                   </button>
                 </div>
 
@@ -2571,9 +2887,13 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                               </div>
                             )}
                           </div>
-                          {dm.other_user_profile?.status && (
+                          {dm.other_user_profile?.status ? (
                             <p className="text-[10px] text-slate-500 italic truncate group-hover:text-slate-400 transition-colors">
                               {dm.other_user_profile.status}
+                            </p>
+                          ) : !onlineUsers.has(dm.other_user_profile?.id || '') && dm.other_user_profile?.last_seen && (
+                            <p className="text-[10px] text-slate-500 italic truncate group-hover:text-slate-400 transition-colors">
+                              Last seen {format(new Date(dm.other_user_profile.last_seen), 'HH:mm')}
                             </p>
                           )}
                         </div>
@@ -2679,6 +2999,69 @@ export const ChatDashboard = ({ user }: { user: any }) => {
         </div>
 
         <div className="flex-1 overflow-y-auto px-3 space-y-6 py-4">
+          {/* Stories Section */}
+          <div className="space-y-4">
+            <div className="flex items-center justify-between px-3">
+              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em]">Stories</span>
+              <button 
+                onClick={() => setShowCreateStoryModal(true)}
+                className="p-1 text-indigo-400 hover:bg-indigo-500/10 rounded-md transition-all"
+              >
+                <Plus className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <div className="flex gap-4 overflow-x-auto pb-2 px-1 scrollbar-none">
+              <button 
+                onClick={() => setShowCreateStoryModal(true)}
+                className="flex-shrink-0 flex flex-col items-center gap-2 group"
+              >
+                <div className="relative">
+                  <div className="w-14 h-14 rounded-full border-2 border-dashed border-slate-700 flex items-center justify-center group-hover:border-indigo-500 transition-colors">
+                    {profile?.avatar_url ? (
+                      <img src={profile.avatar_url} alt="" className="w-12 h-12 rounded-full object-cover" />
+                    ) : (
+                      <User className="w-7 h-7 text-slate-600" />
+                    )}
+                  </div>
+                  <div className="absolute bottom-0 right-0 bg-indigo-500 text-white rounded-full p-1 border-2 border-slate-900">
+                    <Plus className="w-2.5 h-2.5" />
+                  </div>
+                </div>
+                <span className="text-[10px] font-bold text-slate-500 group-hover:text-slate-300 uppercase tracking-wider">Your Story</span>
+              </button>
+              {Array.from(new Set(stories.map(s => s.user_id))).map(userId => {
+                const userStories = stories.filter(s => s.user_id === userId);
+                const storyUser = userStories[0].profiles;
+                const allViewed = userStories.every(s => s.views?.some(v => v.user_id === user.id));
+                
+                return (
+                  <button 
+                    key={userId}
+                    onClick={() => {
+                      setShowStoryModal(userStories[0]);
+                      handleViewStory(userStories[0].id);
+                    }}
+                    className="flex-shrink-0 flex flex-col items-center gap-2 group"
+                  >
+                    <div className={cn(
+                      "p-0.5 rounded-full border-2 transition-all group-hover:scale-105",
+                      allViewed ? "border-slate-700" : "border-indigo-500"
+                    )}>
+                      <div className="w-12 h-12 rounded-full bg-slate-800 flex items-center justify-center text-sm font-bold overflow-hidden border-2 border-slate-900">
+                        {storyUser?.avatar_url ? (
+                          <img src={storyUser.avatar_url} alt="" className="w-full h-full object-cover" />
+                        ) : storyUser?.username?.[0]?.toUpperCase() || '?'}
+                      </div>
+                    </div>
+                    <span className="text-[10px] font-bold text-slate-500 group-hover:text-slate-300 uppercase tracking-wider truncate w-16 text-center">
+                      {storyUser?.username || 'User'}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           {/* Navigation Section */}
           <div className="space-y-1">
             <div className="px-3 py-2">
@@ -2760,11 +3143,11 @@ export const ChatDashboard = ({ user }: { user: any }) => {
           <div className="px-3 py-2 flex items-center justify-between">
             <span className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em]">Sort By</span>
             <button 
-              onClick={() => setSortBy(prev => prev === 'newest' ? 'unread' : 'newest')}
+              onClick={() => setSortBy(prev => prev === 'newest' ? 'unread' : prev === 'unread' ? 'alpha' : 'newest')}
               className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-slate-800/50 text-[10px] font-bold text-indigo-400 hover:bg-slate-800 transition-all border border-indigo-500/20"
             >
               <Filter className="w-3 h-3" />
-              <span className="uppercase">{sortBy === 'unread' ? 'Unread First' : 'Newest First'}</span>
+              <span className="uppercase">{sortBy === 'unread' ? 'Unread First' : sortBy === 'alpha' ? 'Alphabetical' : 'Newest First'}</span>
             </button>
           </div>
 
@@ -3141,7 +3524,16 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                   <h2 className="font-bold text-slate-900 dark:text-white truncate">
                     {activeRoom.is_direct ? activeRoom.other_user_profile?.username : activeRoom.name}
                   </h2>
-                  {!activeRoom.is_direct ? (
+                  {activeRoom.is_direct ? (
+                    <div className="flex flex-col">
+                      <p className={cn(
+                        "text-[10px] font-medium",
+                        onlineUsers.has(activeRoom.other_user_profile?.id || '') ? "text-emerald-500" : "text-slate-400"
+                      )}>
+                        {onlineUsers.has(activeRoom.other_user_profile?.id || '') ? 'Online' : (activeRoom.other_user_profile?.last_seen ? `Last seen ${format(new Date(activeRoom.other_user_profile.last_seen), 'HH:mm')}` : 'Offline')}
+                      </p>
+                    </div>
+                  ) : (
                     <div className="flex items-center gap-2">
                       <div className="flex items-center gap-2 bg-slate-100 dark:bg-slate-800/50 px-2.5 py-1 rounded-xl border border-slate-200 dark:border-white/5">
                         <p className="text-xs text-slate-600 dark:text-slate-400 truncate font-medium">Code: <span className="font-mono text-indigo-600 dark:text-indigo-400">{activeRoom.code}</span></p>
@@ -3167,8 +3559,6 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                         <span className="text-[10px] font-bold uppercase tracking-wider hidden sm:inline">Share</span>
                       </button>
                     </div>
-                  ) : (
-                    <p className="text-xs text-slate-500 truncate">{activeRoom.other_user_profile?.status || 'Direct Message'}</p>
                   )}
                 </div>
               </div>
@@ -3231,6 +3621,29 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                   >
                     {mutedRooms.has(activeRoom.id) ? <BellOff className="w-5 h-5" /> : <Bell className="w-5 h-5" />}
                   </Button>
+                  <Button 
+                    variant="ghost" 
+                    size="icon" 
+                    onClick={() => setActiveCallUrl('https://your-daily-room-url.daily.co/test')}
+                    title="Start Video Call"
+                  >
+                    <Video className="w-5 h-5" />
+                  </Button>
+
+                  {activeRoom.is_direct && (
+                    <Button 
+                      variant="ghost" 
+                      size="icon" 
+                      onClick={toggleVanishMode}
+                      className={cn(
+                        "transition-colors",
+                        activeRoom.vanish_mode ? "text-indigo-400 bg-indigo-500/10 hover:bg-indigo-500/20" : "text-slate-500 dark:text-slate-400"
+                      )}
+                      title="Vanish Mode"
+                    >
+                      <EyeOff className="w-5 h-5" />
+                    </Button>
+                  )}
                   <Button 
                     variant="ghost" 
                     size="icon" 
@@ -3432,7 +3845,8 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                           onContextMenu={(e) => handleContextMenu(e, msg.id)}
                         >
                           <div className={cn(
-                            "px-4 py-2.5 rounded-2xl text-sm leading-relaxed shadow-lg transition-all select-none",
+                            "px-4 py-2.5 rounded-2xl text-sm leading-relaxed shadow-lg transition-all select-none relative",
+                            msg.is_starred && "ring-2 ring-amber-400/50 bg-amber-50/50 dark:bg-amber-900/10",
                             isMe 
                               ? cn(
                                   "bg-indigo-600 text-white",
@@ -3443,6 +3857,11 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                                   shouldGroup ? "rounded-tl-2xl" : "rounded-tl-none"
                                 )
                           )}>
+                            {msg.is_starred && (
+                              <div className="absolute -top-2 -right-2 bg-amber-400 text-white p-1 rounded-full shadow-md z-10">
+                                <Star className="w-3 h-3 fill-white" />
+                              </div>
+                            )}
                             {msg.reply_to_message && (
                               <div 
                                 className="mb-2 p-2 rounded-lg bg-black/5 dark:bg-white/5 border-l-2 border-indigo-500 text-[10px] opacity-80 cursor-pointer hover:bg-black/10 dark:hover:bg-white/10 transition-colors"
@@ -3461,59 +3880,84 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                             )}
 
                             {msg.audio_url ? (
-                              <div className="flex items-center gap-3 min-w-[200px] py-1">
-                                <button
-                                  onClick={() => toggleAudio(msg.id, msg.audio_url!)}
-                                  className={cn(
-                                    "w-10 h-10 rounded-full flex items-center justify-center transition-all",
-                                    isMe ? "bg-white/20 hover:bg-white/30" : "bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-400"
-                                  )}
-                                >
-                                  {playingAudioId === msg.id ? (
-                                    <Pause className="w-5 h-5 fill-current" />
-                                  ) : (
-                                    <Play className="w-5 h-5 fill-current ml-0.5" />
-                                  )}
-                                </button>
-                                <div className="flex-1 space-y-1">
-                                  <div className="flex items-center justify-between text-[10px] opacity-70 font-mono uppercase tracking-widest">
-                                    <span>Voice Message</span>
-                                    <Volume2 className="w-3 h-3" />
-                                  </div>
-                                  <div className="h-1 bg-white/10 rounded-full overflow-hidden">
-                                    <motion.div 
-                                      className={cn("h-full", isMe ? "bg-white/40" : "bg-indigo-500/40")}
-                                      animate={{ width: playingAudioId === msg.id ? '100%' : '0%' }}
-                                      transition={{ duration: 5, ease: "linear" }}
-                                    />
-                                  </div>
-                                </div>
-                              </div>
+                              <AudioPlayer 
+                                isPlaying={playingAudioId === msg.id}
+                                onToggle={() => toggleAudio(msg.id, msg.audio_url!)}
+                                isMe={isMe}
+                              />
                             ) : editingMessageId === msg.id ? (
-                              <div className="flex flex-col gap-2 min-w-[200px]">
+                              <div className="flex flex-col gap-2 min-w-[240px] p-2 bg-indigo-500/5 rounded-xl border border-indigo-500/20">
+                                <div className="flex items-center justify-between mb-1">
+                                  <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest text-indigo-400">
+                                    <Pencil className="w-3 h-3" />
+                                    Editing Message
+                                  </div>
+                                  <button 
+                                    onClick={() => {
+                                      setEditingMessageId(null);
+                                      setShowSaveConfirmation(false);
+                                    }}
+                                    className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                                  >
+                                    <X className="w-3 h-3" />
+                                  </button>
+                                </div>
                                 <textarea
                                   value={editMessageContent}
-                                  onChange={(e) => setEditMessageContent(e.target.value)}
-                                  className="w-full bg-slate-100 dark:bg-slate-900/50 border border-slate-200 dark:border-white/10 rounded-lg p-2 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-indigo-500/50 resize-none min-h-[60px] transition-colors duration-300"
+                                  onChange={(e) => {
+                                    setEditMessageContent(e.target.value);
+                                    setShowSaveConfirmation(false);
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Escape') {
+                                      setEditingMessageId(null);
+                                      setShowSaveConfirmation(false);
+                                    }
+                                  }}
+                                  className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-lg p-2 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-indigo-500/50 resize-none min-h-[80px] transition-colors duration-300 shadow-inner"
                                   autoFocus
                                 />
-                                <div className="flex justify-end gap-2">
-                                  <button 
-                                    onClick={() => setEditingMessageId(null)}
-                                    className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-400 hover:text-slate-200"
-                                  >
-                                    Cancel
-                                  </button>
-                                  <button 
-                                    onClick={() => handleEditMessage(msg.id)}
-                                    className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider bg-indigo-500 text-white rounded-md hover:bg-indigo-400"
-                                  >
-                                    Save
-                                  </button>
+                                <div className="flex justify-between items-center mt-1">
+                                  <span className="text-[10px] text-slate-500 italic">Esc to cancel</span>
+                                  <div className="flex gap-2">
+                                    {!showSaveConfirmation ? (
+                                      <button 
+                                        onClick={() => setShowSaveConfirmation(true)}
+                                        className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider bg-indigo-600 text-white rounded-lg hover:bg-indigo-500 shadow-md transition-all"
+                                      >
+                                        Save
+                                      </button>
+                                    ) : (
+                                      <div className="flex items-center gap-2 animate-in fade-in slide-in-from-right-2 duration-300">
+                                        <span className="text-[10px] font-bold text-amber-500 uppercase tracking-tighter">Confirm?</span>
+                                        <button 
+                                          onClick={() => {
+                                            handleEditMessage(msg.id);
+                                            setShowSaveConfirmation(false);
+                                          }}
+                                          className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider bg-emerald-600 text-white rounded-lg hover:bg-emerald-500 shadow-md transition-all"
+                                        >
+                                          Yes, Save
+                                        </button>
+                                        <button 
+                                          onClick={() => setShowSaveConfirmation(false)}
+                                          className="px-2 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-400 hover:text-slate-600"
+                                        >
+                                          No
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
                                 </div>
                               </div>
                             ) : (
                               <div className="flex flex-col gap-2">
+                                {msg.is_forwarded && (
+                                  <div className="flex items-center gap-1.5 mb-1 opacity-60 italic">
+                                    <Forward className="w-3 h-3" />
+                                    <span className="text-[10px] font-medium">Forwarded</span>
+                                  </div>
+                                )}
                                 {msg.is_pinned && (
                                   <div className="flex items-center gap-1.5 mb-1 opacity-70">
                                     <Pin className="w-3 h-3 text-amber-400 fill-amber-400" />
@@ -4070,6 +4514,48 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                         className="flex-1 bg-transparent border-none py-2 sm:py-3 px-2 text-slate-800 dark:text-slate-200 focus:outline-none placeholder:text-slate-400 dark:placeholder:text-slate-600 text-sm sm:text-base"
                         autoComplete="off"
                       />
+
+                      {/* Mention Suggestions */}
+                      <AnimatePresence>
+                        {showMentions && (
+                          <motion.div 
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: 10 }}
+                            className="absolute bottom-full left-0 mb-2 w-64 bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-white/5 overflow-hidden z-50"
+                          >
+                            <div className="p-2 max-h-48 overflow-y-auto custom-scrollbar">
+                              {members.filter(m => m.username?.toLowerCase().includes(mentionQuery)).map((member, idx) => (
+                                <button
+                                  key={member.id}
+                                  type="button"
+                                  onClick={() => {
+                                    const words = newMessage.split(' ');
+                                    words.pop();
+                                    setNewMessage([...words, `@${member.username} `].join(' '));
+                                    setShowMentions(false);
+                                    document.getElementById('message-input')?.focus();
+                                  }}
+                                  className={cn(
+                                    "w-full flex items-center gap-3 px-3 py-2 rounded-xl transition-all text-left",
+                                    idx === mentionIndex ? "bg-indigo-500/10 text-indigo-500" : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+                                  )}
+                                >
+                                  <div className="w-8 h-8 rounded-lg bg-slate-200 dark:bg-slate-800 flex items-center justify-center text-xs font-bold overflow-hidden">
+                                    {member.avatar_url ? (
+                                      <img src={member.avatar_url} alt="" className="w-full h-full object-cover" />
+                                    ) : member.username?.[0]?.toUpperCase()}
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <p className="text-sm font-bold truncate">{member.username}</p>
+                                    <p className="text-[10px] text-slate-500 truncate">@{member.username}</p>
+                                  </div>
+                                </button>
+                              ))}
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
                     </div>
                     
                     <AnimatePresence>
@@ -4301,7 +4787,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                             "text-[10px] font-medium",
                             onlineUsers.has(member.id) ? "text-emerald-500" : "text-slate-400"
                           )}>
-                            {onlineUsers.has(member.id) ? 'Online' : 'Offline'}
+                            {onlineUsers.has(member.id) ? 'Online' : (member.last_seen ? `Last seen ${format(new Date(member.last_seen), 'HH:mm')}` : 'Offline')}
                           </span>
                           {activeRoom.created_by === member.id && (
                             <Crown className="w-3 h-3 text-amber-400 fill-amber-400/20" />
@@ -4350,6 +4836,49 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                   </div>
                 ))}
               </div>
+
+              {/* Media & Files Gallery */}
+              <div className="mt-8 pt-8 border-t border-slate-200 dark:border-white/5">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                    Media & Files
+                  </h3>
+                </div>
+                
+                {(() => {
+                  const mediaMessages = messages.filter(m => m.image_url || m.file_url);
+                  if (mediaMessages.length === 0) {
+                    return <p className="text-[10px] text-slate-500 italic text-center py-4">No media shared yet</p>;
+                  }
+                  
+                  return (
+                    <div className="grid grid-cols-3 gap-2">
+                      {mediaMessages.slice(0, 9).map((msg) => (
+                        <div 
+                          key={msg.id} 
+                          className="aspect-square rounded-lg bg-slate-100 dark:bg-slate-800 overflow-hidden border border-slate-200 dark:border-white/5 cursor-pointer hover:opacity-80 transition-opacity group relative"
+                          onClick={() => window.open(msg.image_url || msg.file_url, '_blank')}
+                        >
+                          {msg.image_url ? (
+                            <img src={msg.image_url} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                          ) : (
+                            <div className="w-full h-full flex flex-col items-center justify-center p-1">
+                              <Paperclip className="w-4 h-4 text-slate-500" />
+                              <span className="text-[8px] text-slate-500 truncate w-full text-center mt-1">{msg.file_name}</span>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
+                
+                {messages.filter(m => m.image_url || m.file_url).length > 9 && (
+                  <button className="w-full mt-3 py-2 text-[10px] font-bold text-indigo-400 hover:text-indigo-300 uppercase tracking-widest transition-colors">
+                    View All Media
+                  </button>
+                )}
+              </div>
             </div>
           </motion.aside>
         )}
@@ -4362,20 +4891,29 @@ export const ChatDashboard = ({ user }: { user: any }) => {
             initial={{ width: 0, opacity: 0 }}
             animate={{ width: 320, opacity: 1 }}
             exit={{ width: 0, opacity: 0 }}
-            className="hidden lg:flex flex-col border-l border-slate-200 dark:border-white/5 bg-slate-50 dark:bg-[#0f172a] overflow-hidden flex-shrink-0"
+            className="hidden lg:flex flex-col border-l border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-[#0f172a] shadow-xl overflow-hidden flex-shrink-0"
           >
             <div className="p-4 border-b border-slate-200 dark:border-white/5 flex items-center justify-between bg-white dark:bg-[#020617]">
               <div className="flex items-center gap-2">
                 <MessageSquare className="w-5 h-5 text-indigo-500" />
                 <h3 className="font-bold text-slate-900 dark:text-white">Thread</h3>
               </div>
-              <button 
-                onClick={() => setActiveThreadId(null)}
-                className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-              >
-                <X className="w-4 h-4" />
-              </button>
+              <div className="flex items-center gap-1">
+                <button 
+                  onClick={() => setIsThreadCollapsed(!isThreadCollapsed)}
+                  className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                >
+                  {isThreadCollapsed ? <ChevronRight className="w-4 h-4" /> : <X className="w-4 h-4 rotate-90" />}
+                </button>
+                <button 
+                  onClick={() => setActiveThreadId(null)}
+                  className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             </div>
+            {!isThreadCollapsed && (
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
               {(() => {
                 const parentMsg = messages.find(m => m.id === activeThreadId);
@@ -4449,8 +4987,10 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                     </div>
 
                     {/* Thread Replies */}
-                    {threadMessages.map(msg => (
-                      <div key={msg.id} className="flex gap-3">
+                    {threadMessages.map(msg => {
+                      const isMe = msg.user_id === user.id;
+                      return (
+                      <div key={msg.id} className="flex gap-3 group">
                         <div className="w-8 h-8 rounded-lg bg-slate-200 dark:bg-slate-800 flex items-center justify-center flex-shrink-0 overflow-hidden">
                           {msg.profiles?.avatar_url ? (
                             <img src={msg.profiles.avatar_url} alt="Avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
@@ -4459,13 +4999,21 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                           )}
                         </div>
                         <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 mb-1">
-                            <span className="text-sm font-bold text-slate-900 dark:text-white">
-                              {msg.profiles?.username || 'Unknown'}
-                            </span>
-                            <span className="text-[10px] text-slate-500">
-                              {format(new Date(msg.created_at), 'HH:mm')}
-                            </span>
+                          <div className="flex items-center justify-between gap-2 mb-1">
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-bold text-slate-900 dark:text-white">
+                                {msg.profiles?.username || 'Unknown'}
+                              </span>
+                              <span className="text-[10px] text-slate-500">
+                                {format(new Date(msg.created_at), 'HH:mm')}
+                              </span>
+                            </div>
+                            <button 
+                              onClick={() => setReplyingTo(msg)}
+                              className="text-slate-400 hover:text-indigo-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                            >
+                              <Reply className="w-3 h-3" />
+                            </button>
                           </div>
                           <div className="text-sm text-slate-700 dark:text-slate-300">
                             {msg.image_url && (
@@ -4495,20 +5043,22 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                               </a>
                             )}
                             {msg.audio_url && (
-                              <div className="flex items-center gap-2 mb-2">
-                                <Volume2 className="w-4 h-4 text-indigo-500" />
-                                <span className="text-xs text-slate-500 font-mono">Voice Message</span>
-                              </div>
+                              <AudioPlayer 
+                                isPlaying={playingAudioId === msg.id}
+                                onToggle={() => toggleAudio(msg.id, msg.audio_url!)}
+                                isMe={isMe}
+                              />
                             )}
                             {msg.content && <ReactMarkdown>{msg.content}</ReactMarkdown>}
                           </div>
                         </div>
                       </div>
-                    ))}
+                    )})}
                   </>
                 );
               })()}
             </div>
+            )}
             <div className="p-4 bg-white dark:bg-[#020617] border-t border-slate-200 dark:border-white/5">
               <form 
                 onSubmit={(e) => {
@@ -4712,6 +5262,39 @@ export const ChatDashboard = ({ user }: { user: any }) => {
         {showWorkspaceSettingsModal && (
           <Modal title="Workspace Customization" onClose={() => setShowWorkspaceSettingsModal(false)}>
             <div className="space-y-8">
+              {/* Notification Sounds */}
+              <div className="space-y-4">
+                <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                  <Bell className="w-3 h-3" /> Notification Sounds
+                </label>
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">Global Notification Sound</label>
+                    <select
+                      value={notificationSound}
+                      onChange={(e) => setNotificationSound(e.target.value)}
+                      className="w-full p-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5 text-sm text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                    >
+                      {Object.keys(NOTIFICATION_SOUNDS).map(sound => (
+                        <option key={sound} value={sound}>{sound.charAt(0).toUpperCase() + sound.slice(1)}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">Muted Room Sound</label>
+                    <select
+                      value={mutedRoomSound}
+                      onChange={(e) => setMutedRoomSound(e.target.value)}
+                      className="w-full p-2 rounded-xl bg-slate-50 dark:bg-white/5 border border-slate-100 dark:border-white/5 text-sm text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                    >
+                      {Object.keys(NOTIFICATION_SOUNDS).map(sound => (
+                        <option key={sound} value={sound}>{sound.charAt(0).toUpperCase() + sound.slice(1)}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+
               {/* Theme Selection */}
               <div className="space-y-4">
                 <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest flex items-center gap-2">
@@ -4929,6 +5512,16 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                     Clear
                   </button>
                 )}
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">Bio</label>
+                <textarea 
+                  placeholder="Tell us about yourself..." 
+                  value={editBio}
+                  onChange={(e) => setEditBio(e.target.value)}
+                  className="w-full h-24 px-4 py-3 rounded-2xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 text-slate-900 dark:text-white placeholder:text-slate-400 transition-all resize-none"
+                />
               </div>
 
               <div className="pt-4 border-t border-slate-100 dark:border-white/5">
@@ -5539,6 +6132,43 @@ export const ChatDashboard = ({ user }: { user: any }) => {
 
                   <button
                     onClick={() => {
+                      setReplyingTo(msg);
+                      setContextMenu(null);
+                    }}
+                    className="w-full flex items-center gap-3 px-4 py-2 text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                  >
+                    <Reply className="w-4 h-4" />
+                    Reply
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setForwardingMessage(msg);
+                      setShowForwardModal(true);
+                      setContextMenu(null);
+                    }}
+                    className="w-full flex items-center gap-3 px-4 py-2 text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                  >
+                    <Forward className="w-4 h-4" />
+                    Forward
+                  </button>
+
+                  {isMe && (
+                    <button
+                      onClick={() => {
+                        setEditingMessageId(msg.id);
+                        setEditMessageContent(msg.content);
+                        setContextMenu(null);
+                      }}
+                      className="w-full flex items-center gap-3 px-4 py-2 text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                    >
+                      <Pencil className="w-4 h-4" />
+                      Edit Message
+                    </button>
+                  )}
+
+                  <button
+                    onClick={() => {
                       setActiveEmojiPicker(contextMenu.messageId);
                       setContextMenu(null);
                     }}
@@ -5628,6 +6258,210 @@ export const ChatDashboard = ({ user }: { user: any }) => {
               );
             })()}
           </motion.div>
+        )}
+        {activeCallUrl && (
+          <>
+            <VideoCall roomUrl={activeCallUrl} onLeave={() => setActiveCallUrl(null)} />
+            <div className="fixed top-4 right-4 z-[1002] flex items-center gap-2">
+              {isRecordingCall ? (
+                <div className="flex items-center gap-2 bg-slate-900/90 backdrop-blur-sm p-2 rounded-xl shadow-lg border border-red-500/30">
+                  <div className="flex items-center gap-2 px-2">
+                    <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                    <span className="text-sm font-medium text-red-400">Recording</span>
+                  </div>
+                  <button
+                    onClick={stopCallRecording}
+                    className="p-2 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors"
+                    title="Stop Recording"
+                  >
+                    <Square className="w-4 h-4" />
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setShowRecordConsent(true)}
+                  className="flex items-center gap-2 bg-slate-900/90 backdrop-blur-sm px-4 py-2 rounded-xl shadow-lg border border-slate-700 hover:bg-slate-800 transition-colors text-slate-300 hover:text-white"
+                >
+                  <div className="w-2 h-2 rounded-full bg-slate-500" />
+                  <span className="text-sm font-medium">Record Call</span>
+                </button>
+              )}
+            </div>
+          </>
+        )}
+
+        {/* Record Consent Modal */}
+        {showRecordConsent && (
+          <Modal onClose={() => setShowRecordConsent(false)} title="Record Video Call">
+            <div className="p-6 space-y-4">
+              <div className="flex items-center gap-3 text-amber-500 bg-amber-500/10 p-4 rounded-xl">
+                <AlertCircle className="w-6 h-6 shrink-0" />
+                <p className="text-sm">
+                  You are about to start recording this video call. Please ensure you have the consent of all participants before proceeding.
+                </p>
+              </div>
+              <p className="text-sm text-slate-400">
+                The recording will capture your screen and audio. It will be saved locally to your device when you stop recording.
+              </p>
+              <div className="flex justify-end gap-3 pt-4">
+                <Button variant="ghost" onClick={() => setShowRecordConsent(false)}>
+                  Cancel
+                </Button>
+                <Button onClick={startCallRecording} className="bg-red-600 hover:bg-red-700 text-white">
+                  Start Recording
+                </Button>
+              </div>
+            </div>
+          </Modal>
+        )}
+
+        {/* Story View Modal */}
+        {showStoryModal && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black">
+            <div className="relative w-full h-full max-w-lg flex flex-col">
+              <div className="absolute top-0 left-0 right-0 p-4 bg-gradient-to-b from-black/60 to-transparent z-10 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full border-2 border-indigo-500 p-0.5">
+                    <div className="w-full h-full rounded-full bg-slate-800 flex items-center justify-center text-xs font-bold overflow-hidden">
+                      {showStoryModal.profiles?.avatar_url ? (
+                        <img src={showStoryModal.profiles.avatar_url} alt="" className="w-full h-full object-cover" />
+                      ) : showStoryModal.profiles?.username?.[0]?.toUpperCase() || '?'}
+                    </div>
+                  </div>
+                  <div>
+                    <p className="text-sm font-bold text-white">{showStoryModal.profiles?.username || 'User'}</p>
+                    <p className="text-[10px] text-slate-300">{format(new Date(showStoryModal.created_at), 'HH:mm')}</p>
+                  </div>
+                </div>
+                <button onClick={() => setShowStoryModal(null)} className="p-2 text-white hover:bg-white/10 rounded-full transition-all">
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+
+              <div className="flex-1 flex items-center justify-center bg-slate-900">
+                {showStoryModal.media_type === 'image' ? (
+                  <img src={showStoryModal.media_url} alt="" className="max-w-full max-h-full object-contain" />
+                ) : (
+                  <video src={showStoryModal.media_url} controls autoPlay className="max-w-full max-h-full" />
+                )}
+              </div>
+
+              {showStoryModal.caption && (
+                <div className="absolute bottom-0 left-0 right-0 p-8 bg-gradient-to-t from-black/80 to-transparent text-center">
+                  <p className="text-white text-lg font-medium">{showStoryModal.caption}</p>
+                </div>
+              )}
+
+              {/* Story Progress Bar */}
+              <div className="absolute top-0 left-0 right-0 h-1 flex gap-1 p-1">
+                <div className="flex-1 h-full bg-white/30 rounded-full overflow-hidden">
+                  <motion.div 
+                    initial={{ width: 0 }}
+                    animate={{ width: '100%' }}
+                    transition={{ duration: 5, ease: 'linear' }}
+                    onAnimationComplete={() => {
+                      const userStories = stories.filter(s => s.user_id === showStoryModal.user_id);
+                      const currentIndex = userStories.findIndex(s => s.id === showStoryModal.id);
+                      if (currentIndex < userStories.length - 1) {
+                        setShowStoryModal(userStories[currentIndex + 1]);
+                        handleViewStory(userStories[currentIndex + 1].id);
+                      } else {
+                        setShowStoryModal(null);
+                      }
+                    }}
+                    className="h-full bg-white"
+                  />
+                </div>
+              </div>
+
+              {/* View Count (if owner) */}
+              {showStoryModal.user_id === user.id && (
+                <div className="absolute bottom-4 left-4 flex items-center gap-1.5 text-white/80 text-xs bg-black/40 px-3 py-1.5 rounded-full backdrop-blur-sm">
+                  <Eye className="w-3.5 h-3.5" />
+                  <span>{showStoryModal.views?.length || 0} views</span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Create Story Modal */}
+        {showCreateStoryModal && (
+          <Modal onClose={() => setShowCreateStoryModal(false)} title="Create Story">
+            <div className="space-y-6">
+              <div className="flex flex-col items-center justify-center p-8 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-2xl bg-slate-50 dark:bg-slate-900/50 group hover:border-indigo-500 transition-colors cursor-pointer relative overflow-hidden">
+                <input 
+                  type="file" 
+                  accept="image/*,video/*"
+                  className="absolute inset-0 opacity-0 cursor-pointer"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    
+                    try {
+                      showToast('Uploading story...', 'success');
+                      const fileExt = file.name.split('.').pop();
+                      const fileName = `${user.id}/${Math.random()}.${fileExt}`;
+                      const { data, error } = await supabase.storage
+                        .from('chat-assets')
+                        .upload(fileName, file);
+                      
+                      if (error) throw error;
+                      
+                      const { data: { publicUrl } } = supabase.storage
+                        .from('chat-assets')
+                        .getPublicUrl(fileName);
+                      
+                      handlePostStory(publicUrl, file.type.startsWith('video') ? 'video' : 'image');
+                    } catch (error) {
+                      console.error('Error uploading story:', error);
+                      showToast('Upload failed', 'error');
+                    }
+                  }}
+                />
+                <div className="w-16 h-16 rounded-2xl bg-indigo-500/10 flex items-center justify-center text-indigo-500 mb-4 group-hover:scale-110 transition-transform">
+                  <Camera className="w-8 h-8" />
+                </div>
+                <p className="text-sm font-bold text-slate-900 dark:text-white">Upload Photo or Video</p>
+                <p className="text-xs text-slate-500 mt-1">Stories disappear after 24 hours</p>
+              </div>
+              <Button variant="ghost" className="w-full" onClick={() => setShowCreateStoryModal(false)}>Cancel</Button>
+            </div>
+          </Modal>
+        )}
+
+        {/* Forward Modal */}
+        {showForwardModal && (
+          <Modal onClose={() => setShowForwardModal(false)} title="Forward Message">
+            <div className="space-y-4">
+              <p className="text-sm text-slate-500 dark:text-slate-400">Select a chat to forward this message to:</p>
+              <div className="max-h-[300px] overflow-y-auto space-y-1 pr-2 scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800">
+                {rooms.map(room => (
+                  <button
+                    key={room.id}
+                    onClick={() => handleForwardMessage(room.id)}
+                    className="w-full flex items-center gap-3 p-3 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors text-left group"
+                  >
+                    <div className="w-10 h-10 rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-indigo-400 font-bold group-hover:scale-105 transition-transform">
+                      {room.is_direct ? (
+                        room.other_user_profile?.avatar_url ? (
+                          <img src={room.other_user_profile.avatar_url} alt="" className="w-full h-full object-cover rounded-xl" referrerPolicy="no-referrer" />
+                        ) : room.other_user_profile?.username?.[0]?.toUpperCase() || '?'
+                      ) : <Hash className="w-5 h-5" />}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-slate-900 dark:text-white truncate">
+                        {room.is_direct ? room.other_user_profile?.username : room.name}
+                      </p>
+                      <p className="text-xs text-slate-500 truncate">{room.is_direct ? 'Direct Message' : 'Group Chat'}</p>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-slate-400 group-hover:translate-x-1 transition-transform" />
+                  </button>
+                ))}
+              </div>
+              <Button variant="ghost" className="w-full" onClick={() => setShowForwardModal(false)}>Cancel</Button>
+            </div>
+          </Modal>
         )}
       </AnimatePresence>
     </div>

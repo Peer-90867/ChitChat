@@ -9,6 +9,8 @@ CREATE TABLE IF NOT EXISTS profiles (
   status TEXT,
   wallpaper_url TEXT,
   theme_preference TEXT,
+  bio TEXT,
+  last_seen TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW())
 );
 
@@ -18,6 +20,7 @@ CREATE TABLE IF NOT EXISTS rooms (
   name TEXT,
   code TEXT UNIQUE,
   is_direct BOOLEAN DEFAULT FALSE,
+  vanish_mode BOOLEAN DEFAULT FALSE,
   created_by UUID REFERENCES auth.users(id) ON DELETE CASCADE,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW())
 );
@@ -44,6 +47,7 @@ CREATE TABLE IF NOT EXISTS messages (
   file_size INTEGER,
   file_type TEXT,
   reply_to_id UUID REFERENCES messages(id) ON DELETE SET NULL,
+  is_forwarded BOOLEAN DEFAULT FALSE,
   is_pinned BOOLEAN DEFAULT FALSE,
   is_read BOOLEAN DEFAULT FALSE,
   is_delivered BOOLEAN DEFAULT FALSE,
@@ -108,3 +112,23 @@ BEGIN
     AND NOT (p_user_id = ANY(read_by));
 END;
 $$ LANGUAGE plpgsql;
+
+-- 10. Stories Table
+CREATE TABLE IF NOT EXISTS stories (
+  id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  user_id UUID REFERENCES profiles(id) ON DELETE CASCADE,
+  media_url TEXT NOT NULL,
+  media_type TEXT DEFAULT 'image', -- 'image' or 'video'
+  caption TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()),
+  expires_at TIMESTAMP WITH TIME ZONE DEFAULT (TIMEZONE('utc'::text, NOW()) + INTERVAL '24 hours')
+);
+
+-- 11. Story Views Table
+CREATE TABLE IF NOT EXISTS story_views (
+  id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+  story_id UUID REFERENCES stories(id) ON DELETE CASCADE,
+  user_id UUID REFERENCES profiles(id) ON DELETE CASCADE,
+  viewed_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()),
+  UNIQUE(story_id, user_id)
+);
