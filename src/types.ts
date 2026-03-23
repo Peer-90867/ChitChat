@@ -40,7 +40,10 @@ export interface Message {
   file_size?: number;
   file_type?: string;
   is_pinned?: boolean;
+  is_starred?: boolean;
+  is_bookmarked?: boolean;
   reply_to_id?: string;
+  reply_to?: string;
   reply_to_message?: Message;
   link_preview?: {
     title?: string;
@@ -49,6 +52,7 @@ export interface Message {
     url: string;
   };
   read_by?: string[];
+  read_at?: string;
   created_at: string;
   updated_at?: string;
   is_read?: boolean;

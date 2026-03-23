@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS messages (
   is_read BOOLEAN DEFAULT FALSE,
   is_delivered BOOLEAN DEFAULT FALSE,
   read_by UUID[] DEFAULT '{}',
+  read_at TIMESTAMP WITH TIME ZONE,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc'::text, NOW()),
   updated_at TIMESTAMP WITH TIME ZONE
 );
@@ -85,3 +86,25 @@ CREATE TABLE IF NOT EXISTS poll_votes (
   user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
   UNIQUE(poll_option_id, user_id)
 );
+
+-- 9. RPC for marking messages as read
+CREATE OR REPLACE FUNCTION mark_messages_as_read(p_room_id uuid, p_user_id uuid)
+RETURNS void AS $$
+BEGIN
+  UPDATE messages
+  SET 
+    is_read = CASE 
+      WHEN (SELECT is_direct FROM rooms WHERE id = p_room_id) THEN true 
+      ELSE is_read 
+    END,
+    is_delivered = true,
+    read_by = array_append(read_by, p_user_id),
+    read_at = CASE 
+      WHEN (SELECT is_direct FROM rooms WHERE id = p_room_id) AND read_at IS NULL THEN NOW() 
+      ELSE read_at 
+    END
+  WHERE room_id = p_room_id
+    AND user_id != p_user_id
+    AND NOT (p_user_id = ANY(read_by));
+END;
+$$ LANGUAGE plpgsql;

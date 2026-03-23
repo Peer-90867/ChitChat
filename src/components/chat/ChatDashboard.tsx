@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useInView } from 'react-intersection-observer';
-import { supabase, hasValidSupabase } from '@/src/lib/supabase';
+import { supabase, hasValidSupabase, ensureBucketExists } from '@/src/lib/supabase';
 import { Room, Message, Profile } from '@/src/types';
 import { cn } from '@/src/lib/utils';
 import { Button } from '../ui/Button';
@@ -26,6 +26,8 @@ import {
   Smile,
   Mic,
   Square,
+  Star,
+  Bookmark,
   Trash2,
   Play,
   Pause,
@@ -49,6 +51,7 @@ import {
   Reply,
   CornerUpLeft,
   Palette,
+  Video,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
@@ -106,6 +109,15 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const [showJoinModal, setShowJoinModal] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [showRoomSettingsModal, setShowRoomSettingsModal] = useState(false);
+  const [showWorkspaceSettingsModal, setShowWorkspaceSettingsModal] = useState(false);
+  const [isVideoRecording, setIsVideoRecording] = useState(false);
+  const [videoStream, setVideoStream] = useState<MediaStream | null>(null);
+  const [videoPreviewUrl, setVideoPreviewUrl] = useState<string | null>(null);
+  const videoRecorderRef = useRef<MediaRecorder | null>(null);
+  const videoChunksRef = useRef<Blob[]>([]);
+  const videoElementRef = useRef<HTMLVideoElement | null>(null);
+  const [showVideoPreview, setShowVideoPreview] = useState(false);
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [showStorageGuide, setShowStorageGuide] = useState(false);
   const [copied, setCopied] = useState(false);
   const [showMobileRoomMenu, setShowMobileRoomMenu] = useState(false);
@@ -123,6 +135,10 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const [newMessage, setNewMessage] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [showSearch, setShowSearch] = useState(false);
+  const [showGlobalSearch, setShowGlobalSearch] = useState(false);
+  const [globalSearchQuery, setGlobalSearchQuery] = useState('');
+  const [globalSearchResults, setGlobalSearchResults] = useState<Message[]>([]);
+  const [isSearchingGlobal, setIsSearchingGlobal] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isLeaving, setIsLeaving] = useState(false);
   const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
@@ -143,9 +159,30 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const [imageToCrop, setImageToCrop] = useState<string | null>(null);
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
   const [messageToDeleteId, setMessageToDeleteId] = useState<string | null>(null);
+  const [showStarredOnly, setShowStarredOnly] = useState(false);
+  const [showGiphyPicker, setShowGiphyPicker] = useState(false);
+  const [giphySearchQuery, setGiphySearchQuery] = useState('');
+  const [giphyResults, setGiphyResults] = useState<any[]>([]);
+  const [isSearchingGiphy, setIsSearchingGiphy] = useState(false);
+  const [isStickerMode, setIsStickerMode] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingTime, setRecordingTime] = useState(0);
+  const recordingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; messageId: string } | null>(null);
   const [roomContextMenu, setRoomContextMenu] = useState<{ x: number; y: number; roomId: string } | null>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
+  const isAtBottomRef = useRef(true);
+  const activeRoomRef = useRef<Room | null>(null);
+
+  useEffect(() => {
+    isAtBottomRef.current = isAtBottom;
+  }, [isAtBottom]);
+
+  useEffect(() => {
+    activeRoomRef.current = activeRoom;
+  }, [activeRoom]);
   const [hasUnread, setHasUnread] = useState(false);
   const [hasMore, setHasMore] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
@@ -241,6 +278,12 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     });
   };
 
+  const selectRoom = (room: Room) => {
+    setActiveRoom(room);
+    setRooms(prev => prev.map(r => r.id === room.id ? { ...r, unread_count: 0 } : r));
+    markMessagesAsRead(room.id);
+  };
+
   const requestNotificationPermission = async () => {
     if (!('Notification' in window)) {
       showToast('This browser does not support notifications.', 'error');
@@ -293,16 +336,21 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const imageInputRef = useRef<HTMLInputElement>(null);
   
   // Voice Recording State
-  const [isRecording, setIsRecording] = useState(false);
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
   const [audioChunks, setAudioChunks] = useState<Blob[]>([]);
   const [isUploadingVoice, setIsUploadingVoice] = useState(false);
+  const [wallpaperFile, setWallpaperFile] = useState<File | null>(null);
+  const [wallpaperPreview, setWallpaperPreview] = useState<string | null>(null);
+  const [isUploadingWallpaper, setIsUploadingWallpaper] = useState(false);
   const [isUploadingFile, setIsUploadingFile] = useState(false);
+  const [showNotificationBanner, setShowNotificationBanner] = useState(() => {
+    const dismissed = localStorage.getItem('notificationBannerDismissed');
+    return dismissed !== 'true' && typeof Notification !== 'undefined' && Notification.permission === 'default';
+  });
   const [showMentions, setShowMentions] = useState(false);
   const [mentionQuery, setMentionQuery] = useState('');
   const [mentionIndex, setMentionIndex] = useState(0);
-  const recordingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const [playingAudioId, setPlayingAudioId] = useState<string | null>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const activeChannelRef = useRef<any>(null);
@@ -352,6 +400,18 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   }, [dmSearchQuery]);
 
   useEffect(() => {
+    const timer = setTimeout(() => {
+      if (globalSearchQuery) {
+        searchGlobalMessages(globalSearchQuery);
+      } else {
+        setGlobalSearchResults([]);
+      }
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [globalSearchQuery]);
+
+  useEffect(() => {
     if (user) {
       fetchRooms();
     }
@@ -383,6 +443,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
       setHasMore(true);
       fetchMessages(activeRoom.id);
       fetchMembers(activeRoom.id);
+      markMessagesAsRead(activeRoom.id);
       
       // Subscribe to real-time messages, members, and presence
       const channel = supabase.channel(`room:${activeRoom.id}`, {
@@ -437,13 +498,8 @@ export const ChatDashboard = ({ user }: { user: any }) => {
               return [...prev, { ...newMessage, profiles: profileData, reply_to_message: replyToMessage }];
             });
 
-            // Mark as delivered if it's a DM and we're the recipient
-            if (activeRoom.is_direct && newMessage.user_id !== user.id) {
-              await supabase
-                .from('messages')
-                .update({ is_delivered: true })
-                .eq('id', newMessage.id);
-              
+            // Mark as read if we're at the bottom
+            if (isAtBottomRef.current && newMessage.user_id !== user.id) {
               markMessagesAsRead(activeRoom.id);
             }
           }
@@ -557,15 +613,10 @@ export const ChatDashboard = ({ user }: { user: any }) => {
         });
 
       // Polling fallback: Refresh messages every 0.3 seconds as requested
-      const pollingInterval = setInterval(() => {
-        if (hasValidSupabase && activeRoom) {
-          fetchMessages(activeRoom.id, true);
-        }
-      }, 300);
+      // Removed polling interval to improve performance as real-time subscriptions are sufficient.
 
       return () => {
         supabase.removeChannel(channel);
-        clearInterval(pollingInterval);
         activeChannelRef.current = null;
       };
     }
@@ -625,8 +676,8 @@ export const ChatDashboard = ({ user }: { user: any }) => {
           setRooms(prev => {
             const updatedRooms = prev.map(r => {
               if (r.id === newMessage.room_id) {
-                // Only increment unread if it's not the active room
-                const isUnread = activeRoom?.id !== r.id;
+                // Only increment unread if it's not the active room or if we're not at the bottom
+                const isUnread = activeRoomRef.current?.id !== r.id || !isAtBottomRef.current;
                 return { 
                   ...r, 
                   unread_count: isUnread ? (r.unread_count || 0) + 1 : 0,
@@ -711,6 +762,9 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     setIsAtBottom(atBottom);
     if (atBottom) {
       setHasUnread(false);
+      if (activeRoom) {
+        markMessagesAsRead(activeRoom.id);
+      }
     }
   };
 
@@ -783,8 +837,12 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     
     try {
       let avatarUrl = profile?.avatar_url;
+      let wallpaperUrl = profile?.wallpaper_url;
 
       if (avatarFile) {
+        // Ensure bucket exists
+        await ensureBucketExists('avatars');
+        
         const fileExt = avatarFileName.split('.').pop() || 'jpg';
         const fileName = `${user.id}-${Math.random()}.${fileExt}`;
         const filePath = `avatars/${fileName}`;
@@ -812,6 +870,37 @@ export const ChatDashboard = ({ user }: { user: any }) => {
         avatarUrl = publicUrl;
       }
 
+      if (wallpaperFile) {
+        // Ensure bucket exists
+        await ensureBucketExists('avatars');
+        
+        const fileExt = wallpaperFile.name.split('.').pop() || 'jpg';
+        const fileName = `${user.id}-wallpaper-${Math.random()}.${fileExt}`;
+        const filePath = `wallpapers/${fileName}`;
+
+        const { error: uploadError } = await supabase.storage
+          .from('avatars') // Using avatars bucket as it's already configured
+          .upload(filePath, wallpaperFile, {
+            contentType: 'image/jpeg',
+            cacheControl: '3600',
+            upsert: false
+          });
+
+        if (uploadError) {
+          if (uploadError.message.toLowerCase().includes('bucket not found')) {
+            showToast('Storage bucket "avatars" is missing. Please create a public bucket named "avatars" in your Supabase project.', 'error');
+            throw new Error('Bucket "avatars" not found. Please create it in your Supabase Storage dashboard.');
+          }
+          throw uploadError;
+        }
+
+        const { data: { publicUrl } } = supabase.storage
+          .from('avatars')
+          .getPublicUrl(filePath);
+        
+        wallpaperUrl = publicUrl;
+      }
+
       const { error } = await supabase
         .from('profiles')
         .update({ 
@@ -819,7 +908,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
           status: editStatus,
           avatar_url: avatarUrl,
           theme_preference: chatTheme,
-          wallpaper_url: chatWallpaper,
+          wallpaper_url: wallpaperUrl || chatWallpaper,
           updated_at: new Date().toISOString() 
         })
         .eq('id', user.id);
@@ -832,11 +921,16 @@ export const ChatDashboard = ({ user }: { user: any }) => {
         status: editStatus, 
         avatar_url: avatarUrl,
         theme_preference: chatTheme,
-        wallpaper_url: chatWallpaper
+        wallpaper_url: wallpaperUrl || chatWallpaper
       } : null);
+      
+      if (wallpaperUrl) setChatWallpaper(wallpaperUrl);
+      
       setShowProfileModal(false);
       setAvatarFile(null);
       setAvatarPreview(null);
+      setWallpaperFile(null);
+      setWallpaperPreview(null);
       showToast('Profile updated successfully!');
     } catch (error: any) {
       console.error('Error updating profile:', error);
@@ -904,19 +998,33 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     }
   };
 
-  const markMessagesAsRead = async (roomId: string) => {
-    if (!user || !activeRoom?.is_direct || !document.hasFocus()) return;
+  const handleKickMember = async (memberId: string) => {
+    if (!activeRoom || activeRoom.created_by !== user.id) return;
 
-    const { error } = await supabase
-      .from('messages')
-      .update({ 
-        is_read: true,
-        is_delivered: true,
-        read_by: [user.id]
-      })
-      .eq('room_id', roomId)
-      .neq('user_id', user.id)
-      .eq('is_read', false);
+    try {
+      const { error } = await supabase
+        .from('room_members')
+        .delete()
+        .eq('room_id', activeRoom.id)
+        .eq('user_id', memberId);
+
+      if (error) throw error;
+      
+      setMembers(prev => prev.filter(m => m.id !== memberId));
+      showToast('Member kicked from room');
+    } catch (error: any) {
+      console.error('Error kicking member:', error);
+      showToast(error.message || 'Failed to kick member', 'error');
+    }
+  };
+
+  const markMessagesAsRead = async (roomId: string) => {
+    if (!user || !document.hasFocus()) return;
+
+    const { error } = await supabase.rpc('mark_messages_as_read', {
+      p_room_id: roomId,
+      p_user_id: user.id
+    });
 
     if (error) {
       console.error('Error marking messages as read:', error);
@@ -949,7 +1057,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
 
   useEffect(() => {
     const handleFocus = () => {
-      if (activeRoom?.is_direct) {
+      if (activeRoom) {
         markMessagesAsRead(activeRoom.id);
       }
     };
@@ -1120,16 +1228,18 @@ export const ChatDashboard = ({ user }: { user: any }) => {
         // For DMs, we need the other user's profile
         const directRoomIds = roomsData.filter(r => r.is_direct).map(r => r.id);
         
-        // Fetch unread counts for DMs
+        // Fetch unread counts
         const { data: unreadMessages } = await supabase
           .from('messages')
-          .select('room_id')
+          .select('room_id, read_by')
           .neq('user_id', user.id)
-          .eq('is_read', false)
           .in('room_id', roomIds);
 
         const unreadCounts = (unreadMessages || []).reduce((acc: Record<string, number>, msg) => {
-          acc[msg.room_id] = (acc[msg.room_id] || 0) + 1;
+          const isRead = msg.read_by?.includes(user.id);
+          if (!isRead) {
+            acc[msg.room_id] = (acc[msg.room_id] || 0) + 1;
+          }
           return acc;
         }, {});
 
@@ -1230,6 +1340,43 @@ export const ChatDashboard = ({ user }: { user: any }) => {
       console.error('Error searching users:', error);
     } finally {
       setIsSearchingDMs(false);
+    }
+  };
+
+  const searchGlobalMessages = async (query: string) => {
+    if (!query.trim()) {
+      setGlobalSearchResults([]);
+      return;
+    }
+
+    try {
+      setIsSearchingGlobal(true);
+      
+      // Get all room IDs the user is a member of
+      const myRoomIds = rooms.map(r => r.id);
+      if (myRoomIds.length === 0) {
+        setGlobalSearchResults([]);
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from('messages')
+        .select(`
+          *,
+          profiles:user_id(*)
+        `)
+        .in('room_id', myRoomIds)
+        .ilike('content', `%${query}%`)
+        .order('created_at', { ascending: false })
+        .limit(50);
+
+      if (error) throw error;
+      setGlobalSearchResults(data || []);
+    } catch (error: any) {
+      console.error('Error searching global messages:', error);
+      showToast('Failed to search messages', 'error');
+    } finally {
+      setIsSearchingGlobal(false);
     }
   };
 
@@ -1415,9 +1562,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
           }
         }
 
-        if (activeRoom?.is_direct) {
-          markMessagesAsRead(roomId);
-        }
+        markMessagesAsRead(roomId);
       }
     } catch (error: any) {
       console.error('Error fetching messages:', error);
@@ -1586,6 +1731,191 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     }
   };
 
+  const handleToggleStar = async (messageId: string) => {
+    try {
+      const message = messages.find(m => m.id === messageId);
+      if (!message) return;
+
+      const { error } = await supabase
+        .from('messages')
+        .update({ is_starred: !message.is_starred })
+        .eq('id', messageId);
+
+      if (error) throw error;
+      
+      showToast(message.is_starred ? 'Message unstarred' : 'Message starred');
+    } catch (error: any) {
+      console.error('Error toggling star:', error);
+      showToast(error.message || 'Failed to star message', 'error');
+    }
+  };
+
+  const searchGiphy = async (query: string, stickerMode: boolean = isStickerMode) => {
+    if (!query.trim()) return;
+    setIsSearchingGiphy(true);
+    try {
+      // Using a public beta key for demonstration
+      const API_KEY = 'dc6zaTOxFJmzC'; 
+      const endpoint = stickerMode ? 'stickers' : 'gifs';
+      const response = await fetch(`https://api.giphy.com/v1/${endpoint}/search?api_key=${API_KEY}&q=${encodeURIComponent(query)}&limit=20`);
+      const data = await response.json();
+      setGiphyResults(data.data || []);
+    } catch (error) {
+      console.error('Error searching Giphy:', error);
+    } finally {
+      setIsSearchingGiphy(false);
+    }
+  };
+
+  const startVideoRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      setVideoStream(stream);
+      setIsVideoRecording(true);
+      videoChunksRef.current = [];
+      
+      const recorder = new MediaRecorder(stream);
+      videoRecorderRef.current = recorder;
+      
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          videoChunksRef.current.push(e.data);
+        }
+      };
+      
+      recorder.onstop = () => {
+        const blob = new Blob(videoChunksRef.current, { type: 'video/webm' });
+        const url = URL.createObjectURL(blob);
+        setVideoPreviewUrl(url);
+        setShowVideoPreview(true);
+      };
+      
+      recorder.start();
+    } catch (error: any) {
+      console.error('Error starting video recording:', error);
+      showToast('Failed to access camera/microphone', 'error');
+    }
+  };
+
+  const stopVideoRecording = () => {
+    if (videoRecorderRef.current && isVideoRecording) {
+      videoRecorderRef.current.stop();
+      setIsVideoRecording(false);
+      if (videoStream) {
+        videoStream.getTracks().forEach(track => track.stop());
+      }
+    }
+  };
+
+  const cancelVideoRecording = () => {
+    if (videoRecorderRef.current && isVideoRecording) {
+      videoRecorderRef.current.stop();
+      setIsVideoRecording(false);
+      if (videoStream) {
+        videoStream.getTracks().forEach(track => track.stop());
+      }
+      setVideoPreviewUrl(null);
+      setShowVideoPreview(false);
+    }
+  };
+
+  const handleUploadVideo = async () => {
+    if (videoChunksRef.current.length === 0 || !user || !activeRoom) return;
+    
+    setIsUploadingFile(true);
+    try {
+      const blob = new Blob(videoChunksRef.current, { type: 'video/webm' });
+      const fileName = `video-${Date.now()}.webm`;
+      const filePath = `videos/${fileName}`;
+      
+      await ensureBucketExists('chat-attachments');
+      
+      const { error: uploadError } = await supabase.storage
+        .from('chat-attachments')
+        .upload(filePath, blob);
+        
+      if (uploadError) throw uploadError;
+      
+      const { data: { publicUrl } } = supabase.storage
+        .from('chat-attachments')
+        .getPublicUrl(filePath);
+        
+      await handleSendMessage('', undefined, undefined, publicUrl, fileName, blob.size, 'video/webm');
+      setShowVideoPreview(false);
+      setVideoPreviewUrl(null);
+      showToast('Video message sent!');
+    } catch (error: any) {
+      console.error('Error uploading video:', error);
+      showToast('Failed to send video message', 'error');
+    } finally {
+      setIsUploadingFile(false);
+    }
+  };
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = async () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        await handleUploadAudio(audioBlob);
+        stream.getTracks().forEach(track => track.stop());
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+      setRecordingTime(0);
+      recordingIntervalRef.current = setInterval(() => {
+        setRecordingTime(prev => prev + 1);
+      }, 1000);
+    } catch (error) {
+      console.error('Error starting recording:', error);
+      showToast('Could not access microphone', 'error');
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+      if (recordingIntervalRef.current) {
+        clearInterval(recordingIntervalRef.current);
+      }
+    }
+  };
+
+  const handleUploadAudio = async (blob: Blob) => {
+    if (!activeRoom) return;
+    
+    try {
+      const fileName = `audio_${Date.now()}.webm`;
+      const filePath = `${activeRoom.id}/${user.id}/${fileName}`;
+      
+      const { error: uploadError } = await supabase.storage
+        .from('chat-attachments')
+        .upload(filePath, blob);
+
+      if (uploadError) throw uploadError;
+
+      const { data: { publicUrl } } = supabase.storage
+        .from('chat-attachments')
+        .getPublicUrl(filePath);
+
+      await handleSendMessage(undefined, publicUrl);
+    } catch (error: any) {
+      console.error('Error uploading audio:', error);
+      showToast('Failed to upload voice message', 'error');
+    }
+  };
+
   const handleCopyMessage = (content: string) => {
     navigator.clipboard.writeText(content);
     showToast('Message copied to clipboard');
@@ -1600,53 +1930,52 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     });
   };
 
-  const filteredMessages = searchQuery.trim() 
-    ? messages.filter(m => m.content.toLowerCase().includes(searchQuery.toLowerCase()))
-    : messages;
-
-  const handleLogout = () => supabase.auth.signOut();
-
-  // Voice Recording Functions
-  const startRecording = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream);
-      const chunks: Blob[] = [];
-
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunks.push(e.data);
-      };
-
-      recorder.onstop = async () => {
-        const audioBlob = new Blob(chunks, { type: 'audio/webm' });
-        await sendVoiceMessage(audioBlob);
-        stream.getTracks().forEach(track => track.stop());
-      };
-
-      setMediaRecorder(recorder);
-      setAudioChunks([]);
-      recorder.start();
-      setIsRecording(true);
-      setRecordingDuration(0);
+  const filteredMessages = messages.filter(m => {
+    const isNotThreadReply = m.file_type !== 'thread';
+    
+    let matchesSearch = true;
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase();
       
-      recordingIntervalRef.current = setInterval(() => {
-        setRecordingDuration(prev => prev + 1);
-      }, 1000);
-    } catch (error: any) {
-      console.error('Error starting recording:', error);
-      showToast('Could not access microphone. Please check permissions.', 'error');
-    }
-  };
+      // Parse advanced search tokens
+      const fromMatch = query.match(/from:(\w+)/);
+      const hasMatch = query.match(/has:(link|file|image|audio)/);
+      const isMatch = query.match(/is:(pinned|starred|bookmarked)/);
+      
+      // Remove tokens from text search
+      const textQuery = query
+        .replace(/from:\w+/, '')
+        .replace(/has:(link|file|image|audio)/, '')
+        .replace(/is:(pinned|starred|bookmarked)/, '')
+        .trim();
 
-  const stopRecording = () => {
-    if (mediaRecorder && isRecording) {
-      mediaRecorder.stop();
-      setIsRecording(false);
-      if (recordingIntervalRef.current) {
-        clearInterval(recordingIntervalRef.current);
+      if (fromMatch) {
+        matchesSearch = matchesSearch && m.profiles?.username?.toLowerCase().includes(fromMatch[1]);
+      }
+      if (hasMatch) {
+        const type = hasMatch[1];
+        if (type === 'link') matchesSearch = matchesSearch && !!m.link_preview;
+        if (type === 'file') matchesSearch = matchesSearch && !!m.file_url;
+        if (type === 'image') matchesSearch = matchesSearch && !!m.image_url;
+        if (type === 'audio') matchesSearch = matchesSearch && !!m.audio_url;
+      }
+      if (isMatch) {
+        const type = isMatch[1];
+        if (type === 'pinned') matchesSearch = matchesSearch && !!m.is_pinned;
+        if (type === 'starred') matchesSearch = matchesSearch && !!m.is_starred;
+        if (type === 'bookmarked') matchesSearch = matchesSearch && !!m.is_bookmarked;
+      }
+      
+      if (textQuery) {
+        matchesSearch = matchesSearch && m.content.toLowerCase().includes(textQuery);
       }
     }
-  };
+
+    const matchesStarred = showStarredOnly ? m.is_starred : true;
+    return isNotThreadReply && matchesSearch && matchesStarred;
+  });
+
+  const handleLogout = () => supabase.auth.signOut();
 
   const cancelRecording = () => {
     if (mediaRecorder && isRecording) {
@@ -1666,22 +1995,24 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     setIsUploadingVoice(true);
 
     try {
-      const fileName = `${user.id}/${Date.now()}.webm`;
+      // Ensure bucket exists
+      await ensureBucketExists('avatars');
+      
+      const fileName = `voice/${user.id}/${Date.now()}.webm`;
       const { data, error: uploadError } = await supabase.storage
-        .from('voice-messages')
+        .from('avatars')
         .upload(fileName, audioBlob);
 
       if (uploadError) {
         if (uploadError.message.toLowerCase().includes('bucket not found')) {
-          showToast('Storage bucket "voice-messages" is missing. Please create it in Supabase.', 'error');
-          setShowStorageGuide(true);
-          throw new Error('Bucket "voice-messages" not found.');
+          showToast('Storage bucket "avatars" is missing. Please create it in Supabase.', 'error');
+          throw new Error('Bucket "avatars" not found.');
         }
         throw uploadError;
       }
 
       const { data: { publicUrl } } = supabase.storage
-        .from('voice-messages')
+        .from('avatars')
         .getPublicUrl(fileName);
 
       await handleSendMessage('Voice Message', publicUrl);
@@ -1737,6 +2068,15 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     setNewMessage(val);
     handleTyping();
 
+    // Check for slash commands
+    if (val.startsWith('/') && !val.includes(' ')) {
+      const commands = ['/shrug', '/tableflip', '/unflip', '/lenny', '/clear', '/theme', '/help'];
+      if (commands.includes(val.toLowerCase())) {
+        handleSlashCommand(val);
+        return;
+      }
+    }
+
     const lastWord = val.split(' ').pop();
     if (lastWord?.startsWith('@')) {
       setShowMentions(true);
@@ -1775,6 +2115,9 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     if (!activeRoom || !user) return;
 
     try {
+      // Ensure bucket exists
+      await ensureBucketExists('avatars');
+      
       const fileExt = file.name.split('.').pop();
       const fileName = `${user.id}/${Date.now()}.${fileExt}`;
       const filePath = `chat_images/${fileName}`;
@@ -1807,6 +2150,9 @@ export const ChatDashboard = ({ user }: { user: any }) => {
 
     setIsUploadingFile(true);
     try {
+      // Ensure bucket exists
+      await ensureBucketExists('avatars');
+      
       const fileExt = file.name.split('.').pop();
       const fileName = `${user.id}/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.]/g, '_')}`;
       const filePath = `chat_files/${fileName}`;
@@ -1830,8 +2176,39 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     }
   };
 
-  const handleSendMessage = async (content: string = newMessage, audioUrl?: string, imageUrl?: string, fileUrl?: string, fileName?: string, fileSize?: number, fileType?: string) => {
-    console.log('handleSendMessage triggered', { content, audioUrl, imageUrl, fileUrl });
+  const handleSlashCommand = (command: string) => {
+    const cmd = command.toLowerCase().slice(1);
+    switch (cmd) {
+      case 'shrug':
+        setNewMessage(prev => prev.replace(command, '¯\\_(ツ)_/¯'));
+        break;
+      case 'tableflip':
+        setNewMessage(prev => prev.replace(command, '(╯°□°）╯︵ ┻━┻'));
+        break;
+      case 'unflip':
+        setNewMessage(prev => prev.replace(command, '┬─┬ノ( º _ ºノ)'));
+        break;
+      case 'lenny':
+        setNewMessage(prev => prev.replace(command, '( ͡° ͜ʖ ͡°)'));
+        break;
+      case 'clear':
+        setNewMessage('');
+        break;
+      case 'theme':
+        setShowWorkspaceSettingsModal(true);
+        setNewMessage('');
+        break;
+      case 'help':
+        showToast('Available commands: /shrug, /tableflip, /unflip, /lenny, /clear, /theme, /help');
+        setNewMessage('');
+        break;
+      default:
+        break;
+    }
+  };
+
+  const handleSendMessage = async (content: string = newMessage, audioUrl?: string, imageUrl?: string, fileUrl?: string, fileName?: string, fileSize?: number, fileType?: string, threadId?: string) => {
+    console.log('handleSendMessage triggered', { content, audioUrl, imageUrl, fileUrl, threadId });
     const textContent = typeof content === 'string' ? content : newMessage;
     
     if (!textContent.trim() && !audioUrl && !imageUrl && !fileUrl) {
@@ -1851,10 +2228,10 @@ export const ChatDashboard = ({ user }: { user: any }) => {
       return;
     }
 
-    const currentReplyTo = replyingTo;
+    const currentReplyTo = threadId ? { id: threadId } : replyingTo;
     if (!audioUrl && !imageUrl && !fileUrl) {
       setNewMessage('');
-      setReplyingTo(null);
+      if (!threadId) setReplyingTo(null);
     }
     
     try {
@@ -1872,8 +2249,8 @@ export const ChatDashboard = ({ user }: { user: any }) => {
           file_url: fileUrl,
           file_name: fileName,
           file_size: fileSize,
-          file_type: fileType,
-          reply_to_id: currentReplyTo?.id
+          file_type: threadId ? 'thread' : fileType,
+          reply_to_id: threadId || currentReplyTo?.id
         }])
         .select()
         .single();
@@ -2074,6 +2451,16 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                   </div>
                   <button 
                     onClick={() => {
+                      setShowGlobalSearch(true);
+                      setIsMobileMenuOpen(false);
+                    }}
+                    className="w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all group text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                  >
+                    <Search className="w-5 h-5 text-slate-500 group-hover:text-slate-400 transition-colors" />
+                    <span className="font-medium">Global Search</span>
+                  </button>
+                  <button 
+                    onClick={() => {
                       setShowMembers(!showMembers);
                       setIsMobileMenuOpen(false);
                     }}
@@ -2202,41 +2589,66 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                 </div>
               </div>
 
-              {/* User Profile Section inside Mobile Drawer */}
-              <div className="p-4 bg-slate-100 dark:bg-slate-900/50 border-t border-slate-200 dark:border-white/5 transition-colors duration-300">
-                <div className="flex items-center gap-3">
-                  <button 
-                    onClick={() => {
+                {/* User Profile Section inside Mobile Drawer */}
+                <div className="p-4 bg-slate-100 dark:bg-slate-900/50 border-t border-slate-200 dark:border-white/5 transition-colors duration-300 space-y-4">
+                  <div className="grid grid-cols-2 gap-2">
+                    <button 
+                      onClick={() => {
+                        setShowStarredOnly(!showStarredOnly);
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className={cn(
+                        "flex items-center justify-center gap-2 p-2.5 rounded-xl transition-all text-xs font-bold",
+                        showStarredOnly ? "bg-amber-500/10 text-amber-500 border border-amber-500/20" : "bg-slate-200 dark:bg-slate-800 text-slate-500 dark:text-slate-400"
+                      )}
+                    >
+                      <Star className="w-4 h-4" />
+                      Starred
+                    </button>
+                    <button 
+                      onClick={() => {
+                        setShowWorkspaceSettingsModal(true);
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className="flex items-center justify-center gap-2 p-2.5 rounded-xl bg-slate-200 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-slate-300 dark:hover:bg-slate-700 transition-all text-xs font-bold"
+                    >
+                      <Palette className="w-4 h-4" />
+                      Workspace
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <button 
+                      onClick={() => {
+                        setShowProfileModal(true);
+                        setIsMobileMenuOpen(false);
+                      }}
+                      className="w-10 h-10 rounded-xl bg-indigo-500/20 flex items-center justify-center text-indigo-400 font-bold border border-indigo-500/20 hover:bg-indigo-500/30 transition-all overflow-hidden"
+                    >
+                      {profile?.avatar_url ? (
+                        <img src={profile.avatar_url} alt="Avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                      ) : (
+                        profile?.username?.[0]?.toUpperCase() || user.email[0].toUpperCase()
+                      )}
+                    </button>
+                    <div className="flex-1 min-w-0 cursor-pointer" onClick={() => {
                       setShowProfileModal(true);
                       setIsMobileMenuOpen(false);
-                    }}
-                    className="w-10 h-10 rounded-xl bg-indigo-500/20 flex items-center justify-center text-indigo-400 font-bold border border-indigo-500/20 hover:bg-indigo-500/30 transition-all overflow-hidden"
-                  >
-                    {profile?.avatar_url ? (
-                      <img src={profile.avatar_url} alt="Avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                    ) : (
-                      profile?.username?.[0]?.toUpperCase() || user.email[0].toUpperCase()
-                    )}
-                  </button>
-                  <div className="flex-1 min-w-0 cursor-pointer" onClick={() => {
-                    setShowProfileModal(true);
-                    setIsMobileMenuOpen(false);
-                  }}>
-                    <p className="text-sm font-bold text-slate-900 dark:text-white truncate">{profile?.username || 'User'}</p>
-                    <p className="text-xs text-slate-500 truncate">{user.email}</p>
+                    }}>
+                      <p className="text-sm font-bold text-slate-900 dark:text-white truncate">{profile?.username || 'User'}</p>
+                      <p className="text-xs text-slate-500 truncate">{user.email}</p>
+                    </div>
+                    <button onClick={handleLogout} className="p-2 hover:bg-red-500/10 rounded-xl text-slate-500 hover:text-red-400 transition-all">
+                      <LogOut className="w-4 h-4" />
+                    </button>
                   </div>
-                  <button onClick={handleLogout} className="p-2 hover:bg-red-500/10 rounded-xl text-slate-500 hover:text-red-400 transition-all">
-                    <LogOut className="w-4 h-4" />
-                  </button>
                 </div>
-              </div>
             </motion.aside>
           </>
         )}
       </AnimatePresence>
 
       {/* Desktop Sidebar - Hidden on mobile */}
-      <aside className="hidden lg:flex w-16 bg-white dark:bg-[#020617] border-r border-slate-200 dark:border-white/5 flex-col items-center py-4 gap-4 flex-shrink-0 transition-colors duration-300">
+      <aside className="hidden lg:flex w-16 bg-white/80 dark:bg-[#020617]/80 backdrop-blur-md border-r border-slate-200 dark:border-white/5 flex-col items-center py-4 gap-4 flex-shrink-0 transition-colors duration-300">
         <div className="w-12 h-12 bg-indigo-600 rounded-2xl flex items-center justify-center text-white shadow-lg shadow-indigo-500/20 cursor-pointer hover:rounded-xl transition-all">
           <MessageSquare className="w-6 h-6" />
         </div>
@@ -2256,7 +2668,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
         </div>
       </aside>
 
-      <aside className="hidden lg:flex w-64 bg-slate-50 dark:bg-[#0f172a] border-r border-slate-200 dark:border-white/5 flex-col flex-shrink-0 transition-colors duration-300">
+      <aside className="hidden lg:flex w-64 bg-slate-50/80 dark:bg-[#0f172a]/80 backdrop-blur-md border-r border-slate-200 dark:border-white/5 flex-col flex-shrink-0 transition-colors duration-300">
         <div className="p-6 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center">
@@ -2273,6 +2685,35 @@ export const ChatDashboard = ({ user }: { user: any }) => {
               <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Navigation</span>
             </div>
             <div className="space-y-0.5">
+              <button 
+                onClick={() => setShowStarredOnly(!showStarredOnly)}
+                className={cn(
+                  "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all group relative",
+                  showStarredOnly 
+                    ? "bg-amber-500/10 text-amber-500" 
+                    : "text-slate-400 hover:bg-slate-800/50 hover:text-slate-200"
+                )}
+              >
+                <Star className={cn(
+                  "w-4 h-4 transition-colors",
+                  showStarredOnly ? "text-amber-500" : "text-slate-500 group-hover:text-slate-400"
+                )} />
+                <span className="font-medium">Starred</span>
+                {showStarredOnly && (
+                  <motion.div 
+                    layoutId="activeNavDesktop"
+                    className="absolute left-0 w-1 h-6 bg-amber-500 rounded-r-full"
+                  />
+                )}
+              </button>
+
+              <button 
+                onClick={() => setShowGlobalSearch(true)}
+                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all group relative text-slate-400 hover:bg-slate-800/50 hover:text-slate-200"
+              >
+                <Search className="w-4 h-4 text-slate-500 group-hover:text-slate-400 transition-colors" />
+                <span className="font-medium">Global Search</span>
+              </button>
               <button 
                 onClick={() => setShowMembers(!showMembers)}
                 className={cn(
@@ -2300,6 +2741,13 @@ export const ChatDashboard = ({ user }: { user: any }) => {
               >
                 <Search className="w-4 h-4 text-slate-500 group-hover:text-slate-400 transition-colors" />
                 <span className="font-medium">Join Room</span>
+              </button>
+              <button 
+                onClick={() => setShowWorkspaceSettingsModal(true)}
+                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-slate-400 hover:bg-slate-800/50 hover:text-slate-200 transition-all group"
+              >
+                <Palette className="w-4 h-4 text-slate-500 group-hover:text-slate-400 transition-colors" />
+                <span className="font-medium">Workspace</span>
               </button>
               <button className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-slate-400 hover:bg-slate-800/50 hover:text-slate-200 transition-all group">
                 <Settings className="w-4 h-4 text-slate-500 group-hover:text-slate-400 transition-colors" />
@@ -2335,7 +2783,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
               {groupRooms.map((room) => (
                 <button
                   key={room.id}
-                  onClick={() => setActiveRoom(room)}
+                  onClick={() => selectRoom(room)}
                   className={cn(
                     "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all group relative",
                     activeRoom?.id === room.id 
@@ -2347,7 +2795,10 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                     "w-4 h-4 transition-colors",
                     activeRoom?.id === room.id ? "text-indigo-400" : "text-slate-500 group-hover:text-slate-400"
                   )} />
-                  <span className="font-medium truncate">{room.name}</span>
+                  <span className={cn(
+                    "font-medium truncate",
+                    room.unread_count && room.unread_count > 0 && "font-bold text-slate-200"
+                  )}>{room.name}</span>
                   {room.unread_count && room.unread_count > 0 ? (
                     <div className="ml-auto bg-indigo-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center shadow-lg shadow-indigo-500/20">
                       {room.unread_count}
@@ -2384,7 +2835,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
               {directMessages.map((dm) => (
                 <button
                   key={dm.id}
-                  onClick={() => setActiveRoom(dm)}
+                  onClick={() => selectRoom(dm)}
                   className={cn(
                     "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all group relative",
                     activeRoom?.id === dm.id 
@@ -2405,7 +2856,10 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                       onlineUsers.has(dm.other_user_profile?.id || '') ? "bg-emerald-500" : "bg-slate-500"
                     )} />
                   </div>
-                  <span className="font-medium truncate">{dm.other_user_profile?.username || 'Unknown'}</span>
+                  <span className={cn(
+                    "font-medium truncate",
+                    dm.unread_count && dm.unread_count > 0 && "font-bold text-slate-200"
+                  )}>{dm.other_user_profile?.username || 'Unknown'}</span>
                   {dm.unread_count && dm.unread_count > 0 ? (
                     <div className="ml-auto bg-indigo-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center shadow-lg shadow-indigo-500/20">
                       {dm.unread_count}
@@ -2572,7 +3026,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                         initial={{ opacity: 0, scale: 0.95, y: -10 }}
                         animate={{ opacity: 1, scale: 1, y: 0 }}
                         exit={{ opacity: 0, scale: 0.95, y: -10 }}
-                        className="absolute right-0 mt-2 w-48 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-xl z-30 py-1 overflow-hidden transition-colors duration-300"
+                        className="absolute right-0 mt-2 w-48 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md border border-slate-200 dark:border-slate-800 rounded-xl shadow-xl z-30 py-1 overflow-hidden transition-colors duration-300"
                       >
                         <button
                           onClick={() => {
@@ -2780,6 +3234,19 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                   <Button 
                     variant="ghost" 
                     size="icon" 
+                    onClick={() => setShowStarredOnly(!showStarredOnly)}
+                    className={cn(
+                      "transition-colors",
+                      showStarredOnly ? "text-amber-400 bg-amber-500/10 hover:bg-amber-500/20" : "text-slate-500 dark:text-slate-400"
+                    )}
+                    title="Starred Messages"
+                  >
+                    <Star className={cn("w-5 h-5", showStarredOnly && "fill-amber-400")} />
+                  </Button>
+
+                  <Button 
+                    variant="ghost" 
+                    size="icon" 
                     onClick={() => {
                       setEditRoomName(activeRoom.name);
                       setShowRoomSettingsModal(true);
@@ -2790,6 +3257,52 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                   </Button>
                 </div>
             </header>
+            
+            {/* Notification Permission Banner */}
+            <AnimatePresence>
+              {showNotificationBanner && (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  className="px-6 py-3 bg-indigo-500/10 border-b border-indigo-500/20 flex items-center justify-between gap-4 z-20"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full bg-indigo-500/20 flex items-center justify-center text-indigo-400">
+                      <Bell className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900 dark:text-slate-200">Enable Browser Notifications</p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">Get notified when you receive new messages even when the app is in the background.</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button 
+                      size="sm" 
+                      onClick={() => {
+                        requestNotificationPermission();
+                        setShowNotificationBanner(false);
+                        localStorage.setItem('notificationBannerDismissed', 'true');
+                      }}
+                      className="bg-indigo-500 hover:bg-indigo-600 text-white border-none"
+                    >
+                      Enable
+                    </Button>
+                    <Button 
+                      variant="ghost" 
+                      size="sm" 
+                      onClick={() => {
+                        setShowNotificationBanner(false);
+                        localStorage.setItem('notificationBannerDismissed', 'true');
+                      }}
+                      className="text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+                    >
+                      Dismiss
+                    </Button>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             {/* Messages */}
             <div 
@@ -2919,7 +3432,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                           onContextMenu={(e) => handleContextMenu(e, msg.id)}
                         >
                           <div className={cn(
-                            "px-4 py-2.5 rounded-2xl text-sm leading-relaxed shadow-lg transition-all",
+                            "px-4 py-2.5 rounded-2xl text-sm leading-relaxed shadow-lg transition-all select-none",
                             isMe 
                               ? cn(
                                   "bg-indigo-600 text-white",
@@ -3061,19 +3574,21 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                                       acc[r.emoji].push(r.id);
                                       return acc;
                                     }, {})).map(([emoji, ids]) => (
-                                      <button
+                                      <motion.button
                                         key={emoji}
+                                        whileHover={{ scale: 1.05 }}
+                                        whileTap={{ scale: 0.95 }}
                                         onClick={() => handleToggleReaction(msg.id, emoji)}
                                         className={cn(
-                                          "px-1.5 py-0.5 rounded-full text-xs flex items-center gap-1 transition-all",
+                                          "flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium transition-all border",
                                           msg.reactions?.some(r => r.emoji === emoji && r.user_id === user.id)
-                                            ? "bg-indigo-500/20 border border-indigo-500/30"
-                                            : "bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600"
+                                            ? "bg-indigo-50 border-indigo-200 text-indigo-700 dark:bg-indigo-900/30 dark:border-indigo-800 dark:text-indigo-300"
+                                            : "bg-white border-slate-200 text-slate-700 hover:border-slate-300 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-300 dark:hover:border-slate-600"
                                         )}
                                       >
-                                        <span>{emoji}</span>
-                                        <span className="font-bold">{ids.length}</span>
-                                      </button>
+                                        <span className="text-sm">{emoji}</span>
+                                        <span className="font-semibold">{ids.length}</span>
+                                      </motion.button>
                                     ))}
                                   </div>
                                 )}
@@ -3081,6 +3596,40 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                                 {msg.link_preview && (
                                   <LinkPreview preview={msg.link_preview} />
                                 )}
+
+                                {(() => {
+                                  const threadReplies = messages.filter(m => m.reply_to_id === msg.id && m.file_type === 'thread');
+                                  if (threadReplies.length === 0) return null;
+                                  
+                                  // Get unique users who replied
+                                  const repliers = Array.from(new Set(threadReplies.map(r => r.user_id)))
+                                    .map(id => members.find(m => m.id === id) || threadReplies.find(r => r.user_id === id)?.profiles)
+                                    .filter(Boolean)
+                                    .slice(0, 3);
+
+                                  return (
+                                    <button 
+                                      onClick={() => setActiveThreadId(msg.id)}
+                                      className={cn(
+                                        "mt-1 flex items-center gap-2 text-xs font-medium transition-colors p-1.5 -ml-1.5 rounded-lg",
+                                        isMe ? "text-indigo-100 hover:bg-white/10" : "text-indigo-500 hover:bg-indigo-500/10 dark:text-indigo-400 dark:hover:bg-indigo-500/20"
+                                      )}
+                                    >
+                                      <div className="flex -space-x-1.5">
+                                        {repliers.map((replier, i) => (
+                                          <div key={i} className="w-5 h-5 rounded-full border border-white dark:border-slate-800 bg-slate-200 dark:bg-slate-700 flex items-center justify-center overflow-hidden text-[8px] font-bold">
+                                            {replier?.avatar_url ? (
+                                              <img src={replier.avatar_url} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                                            ) : (
+                                              replier?.username?.[0]?.toUpperCase() || '?'
+                                            )}
+                                          </div>
+                                        ))}
+                                      </div>
+                                      <span>{threadReplies.length} {threadReplies.length === 1 ? 'reply' : 'replies'}</span>
+                                    </button>
+                                  );
+                                })()}
                               </div>
                             )}
                             
@@ -3097,14 +3646,29 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                                 </div>
                               )}
                               <span>{format(new Date(msg.created_at), 'HH:mm')}</span>
-                              {isMe && activeRoom?.is_direct && (
+                              {isMe && (
                                 <div className="flex items-center">
-                                  {msg.is_read || (msg.read_by && msg.read_by.length > 0) ? (
-                                    <CheckCheck className="w-3 h-3 text-sky-400" />
-                                  ) : msg.is_delivered ? (
-                                    <CheckCheck className="w-3 h-3 opacity-70" />
+                                  {activeRoom?.is_direct ? (
+                                    msg.is_read || (msg.read_by && msg.read_by.length > 0) ? (
+                                      <span title={msg.read_at ? `Read at ${format(new Date(msg.read_at), 'HH:mm')}` : 'Read'}>
+                                        <CheckCheck className="w-3 h-3 text-sky-400" />
+                                      </span>
+                                    ) : msg.is_delivered ? (
+                                      <span title="Delivered">
+                                        <CheckCheck className="w-3 h-3 opacity-70" />
+                                      </span>
+                                    ) : (
+                                      <span title="Sent">
+                                        <Check className="w-3 h-3 opacity-70" />
+                                      </span>
+                                    )
                                   ) : (
-                                    <Check className="w-3 h-3 opacity-70" />
+                                    // Group Chat
+                                    msg.read_by && msg.read_by.length > 0 && (
+                                      <span title={`Read by: ${msg.read_by.map(id => members.find(m => m.id === id)?.username || 'Unknown').join(', ')}`}>
+                                        <CheckCheck className="w-3 h-3 text-sky-400" />
+                                      </span>
+                                    )
                                   )}
                                 </div>
                               )}
@@ -3113,45 +3677,102 @@ export const ChatDashboard = ({ user }: { user: any }) => {
 
                           {/* Message Actions Trigger */}
                           <div className={cn(
-                            "absolute top-0 opacity-0 group-hover/bubble:opacity-100 transition-opacity z-10 flex gap-1",
+                            "absolute top-0 opacity-0 group-hover/bubble:opacity-100 transition-opacity z-10 flex gap-1 select-none",
                             isMe ? "right-full mr-2" : "left-full ml-2"
                           )}>
-                            <button
+                            <motion.button
+                              initial={{ opacity: 0, scale: 0.5 }}
+                              animate={{ opacity: 1, scale: 1 }}
+                              transition={{ delay: 0 }}
                               onClick={() => setReplyingTo(msg)}
-                              className="p-1.5 text-slate-500 hover:text-indigo-400 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition-colors bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm border border-slate-200 dark:border-slate-800"
+                              className="p-1.5 text-slate-500 hover:text-indigo-400 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition-all hover:scale-110 active:scale-95 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm border border-slate-200 dark:border-slate-800"
                               title="Reply"
                             >
                               <Reply className="w-4 h-4" />
-                            </button>
+                            </motion.button>
 
-                            <button
+                            <motion.button
+                              initial={{ opacity: 0, scale: 0.5 }}
+                              animate={{ opacity: 1, scale: 1 }}
+                              transition={{ delay: 0.05 }}
+                              onClick={() => setActiveThreadId(msg.id)}
+                              className="p-1.5 text-slate-500 hover:text-indigo-400 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition-all hover:scale-110 active:scale-95 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm border border-slate-200 dark:border-slate-800"
+                              title="Reply in Thread"
+                            >
+                              <MessageSquare className="w-4 h-4" />
+                            </motion.button>
+
+                            <div className="flex gap-1 items-center">
+                              {['👍', '❤️', '😂', '🔥'].map((emoji, index) => (
+                                <motion.button
+                                  key={emoji}
+                                  initial={{ opacity: 0, scale: 0.5 }}
+                                  animate={{ opacity: 1, scale: 1 }}
+                                  whileTap={{ scale: 0.9 }}
+                                  transition={{ delay: index * 0.05 }}
+                                  onClick={() => handleToggleReaction(msg.id, emoji)}
+                                  className="p-1.5 text-slate-500 hover:text-indigo-400 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition-all hover:scale-110 active:scale-95 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm border border-slate-200 dark:border-slate-800"
+                                  title={`React with ${emoji}`}
+                                >
+                                  <span className="text-sm leading-none">{emoji}</span>
+                                </motion.button>
+                              ))}
+                            </div>
+
+                            <motion.button
+                              initial={{ opacity: 0, scale: 0.5 }}
+                              animate={{ opacity: 1, scale: 1 }}
+                              transition={{ delay: 0.2 }}
+                              onClick={() => handleToggleStar(msg.id)}
+                              className={cn(
+                                "p-1.5 rounded-lg transition-all hover:scale-110 active:scale-95 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm border border-slate-200 dark:border-slate-800",
+                                msg.is_starred ? "text-amber-400" : "text-slate-500 hover:text-amber-400"
+                              )}
+                              title={msg.is_starred ? "Unstar Message" : "Star Message"}
+                            >
+                              <Star className={cn("w-4 h-4", msg.is_starred && "fill-amber-400")} />
+                            </motion.button>
+
+
+
+                            <motion.button
+                              initial={{ opacity: 0, scale: 0.5 }}
+                              animate={{ opacity: 1, scale: 1 }}
+                              transition={{ delay: 0.25 }}
                               onClick={() => setActiveEmojiPicker(activeEmojiPicker === msg.id ? null : msg.id)}
-                              className="p-1.5 text-slate-500 hover:text-indigo-400 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition-colors bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm border border-slate-200 dark:border-slate-800"
+                              className="p-1.5 text-slate-500 hover:text-indigo-400 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition-all hover:scale-110 active:scale-95 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm border border-slate-200 dark:border-slate-800"
+                              title="More Reactions"
                             >
                               <Smile className="w-4 h-4" />
-                            </button>
+                            </motion.button>
                             
                             {isMe && !msg.audio_url && (new Date().getTime() - new Date(msg.created_at).getTime()) < 15 * 60 * 1000 && (
-                              <button
+                              <motion.button
+                                initial={{ opacity: 0, scale: 0.5 }}
+                                animate={{ opacity: 1, scale: 1 }}
+                                transition={{ delay: 0.25 }}
                                 onClick={() => {
                                   setPendingEditMessageId(msg.id);
                                   setShowEditConfirmation(true);
                                 }}
-                                className="p-1.5 text-slate-500 hover:text-indigo-400 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition-colors bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm border border-slate-200 dark:border-slate-800"
+                                className="p-1.5 text-slate-500 hover:text-indigo-400 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition-all hover:scale-110 active:scale-95 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm border border-slate-200 dark:border-slate-800"
                                 title="Edit Message"
                               >
                                 <Pencil className="w-4 h-4" />
-                              </button>
+                              </motion.button>
                             )}
 
-                            {isMe && (
-                              <button
+                            {(isMe || (activeRoom && activeRoom.created_by === user.id)) && (
+                              <motion.button
+                                initial={{ opacity: 0, scale: 0.5 }}
+                                animate={{ opacity: 1, scale: 1 }}
+                                transition={{ delay: 0.3 }}
                                 onClick={() => setMessageToDeleteId(msg.id)}
-                                className="p-1.5 text-slate-500 hover:text-red-400 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition-colors bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm border border-slate-200 dark:border-slate-800"
-                                title="Delete Message"
+                                className="p-1.5 text-slate-500 hover:text-red-400 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition-all hover:scale-110 active:scale-95 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm border border-slate-200 dark:border-slate-800"
+                                title={isMe ? "Delete Message" : "Delete Message (Moderator)"}
                               >
                                 <Trash2 className="w-4 h-4" />
-                              </button>
+                              </motion.button>
                             )}
                             
                             <AnimatePresence>
@@ -3231,19 +3852,21 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                             ).map(([emoji, count]) => {
                               const hasReacted = msg.reactions?.some(r => r.user_id === user.id && r.emoji === emoji);
                               return (
-                                <button
+                                <motion.button
                                   key={emoji}
+                                  whileHover={{ scale: 1.05 }}
+                                  whileTap={{ scale: 0.95 }}
                                   onClick={() => handleToggleReaction(msg.id, emoji)}
                                   className={cn(
-                                    "flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold transition-all border",
+                                    "flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium transition-all border",
                                     hasReacted 
-                                      ? "bg-indigo-500/20 border-indigo-500/40 text-indigo-400" 
-                                      : "bg-slate-100 dark:bg-slate-800/80 border-slate-200 dark:border-white/5 text-slate-600 dark:text-slate-500 hover:border-slate-300 dark:hover:border-white/10"
+                                      ? "bg-indigo-50 border-indigo-200 text-indigo-700 dark:bg-indigo-900/30 dark:border-indigo-800 dark:text-indigo-300"
+                                      : "bg-white border-slate-200 text-slate-700 hover:border-slate-300 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-300 dark:hover:border-slate-600"
                                   )}
                                 >
-                                  <span>{emoji}</span>
-                                  <span>{count}</span>
-                                </button>
+                                  <span className="text-sm">{emoji}</span>
+                                  <span className="font-semibold">{count}</span>
+                                </motion.button>
                               );
                             })}
                           </div>
@@ -3373,15 +3996,15 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                   className="relative flex items-center gap-2"
                 >
                   <div className="relative flex-1">
-                    <div className="absolute left-3 top-1/2 -translate-y-1/2 flex items-center gap-1">
+                    <div className="flex items-center gap-0.5 sm:gap-1 bg-slate-100 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl p-0.5 sm:p-1 shadow-sm flex-shrink-0">
                       <button 
                         type="button"
                         onClick={() => fileInputRef.current?.click()}
-                        className="p-2 text-slate-500 hover:text-indigo-400 transition-all"
+                        className="p-1.5 sm:p-2 text-slate-500 hover:text-indigo-400 transition-all"
                         title="Attach File"
                         disabled={isUploadingFile}
                       >
-                        <Paperclip className={cn("w-5 h-5", isUploadingFile && "animate-pulse")} />
+                        <Paperclip className={cn("w-4 h-4 sm:w-5 sm:h-5", isUploadingFile && "animate-pulse")} />
                       </button>
                       <input 
                         type="file" 
@@ -3395,10 +4018,10 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                       <button 
                         type="button"
                         onClick={() => imageInputRef.current?.click()}
-                        className="p-2 text-slate-500 hover:text-indigo-400 transition-all"
+                        className="p-1.5 sm:p-2 text-slate-500 hover:text-indigo-400 transition-all"
                         title="Upload Image"
                       >
-                        <ImageIcon className="w-5 h-5" />
+                        <ImageIcon className="w-4 h-4 sm:w-5 sm:h-5" />
                       </button>
                       <input 
                         type="file" 
@@ -3410,19 +4033,150 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                           if (file) handleImageUpload(file);
                         }}
                       />
+                      <button 
+                        type="button"
+                        onClick={() => setShowGiphyPicker(!showGiphyPicker)}
+                        className={cn(
+                          "p-1.5 sm:p-2 transition-all",
+                          showGiphyPicker ? "text-indigo-500" : "text-slate-500 hover:text-indigo-400"
+                        )}
+                        title="Giphy"
+                      >
+                        <SmilePlus className="w-4 h-4 sm:w-5 sm:h-5" />
+                      </button>
+                      <button 
+                        type="button"
+                        onMouseDown={startVideoRecording}
+                        onMouseUp={stopVideoRecording}
+                        onMouseLeave={stopVideoRecording}
+                        onTouchStart={startVideoRecording}
+                        onTouchEnd={stopVideoRecording}
+                        className={cn(
+                          "p-1.5 sm:p-2 transition-all",
+                          isVideoRecording ? "text-red-500 animate-pulse" : "text-slate-500 hover:text-indigo-400"
+                        )}
+                        title="Hold to Record Video"
+                      >
+                        <Video className="w-4 h-4 sm:w-5 sm:h-5" />
+                      </button>
+                      <input
+                        type="text"
+                        id="message-input"
+                        value={newMessage}
+                        onChange={handleMessageChange}
+                        onKeyDown={handleInputKeyDown}
+                        placeholder={activeRoom.is_direct ? `Message @${activeRoom.other_user_profile?.username}` : `Message #${activeRoom.name}`}
+                        disabled={isRecording || isUploadingFile}
+                        className="flex-1 bg-transparent border-none py-2 sm:py-3 px-2 text-slate-800 dark:text-slate-200 focus:outline-none placeholder:text-slate-400 dark:placeholder:text-slate-600 text-sm sm:text-base"
+                        autoComplete="off"
+                      />
                     </div>
-                    <input
-                      type="text"
-                      id="message-input"
-                      value={newMessage}
-                      onChange={handleMessageChange}
-                      onKeyDown={handleInputKeyDown}
-                      placeholder={activeRoom.is_direct ? `Message @${activeRoom.other_user_profile?.username}` : `Message #${activeRoom.name}`}
-                      disabled={isRecording || isUploadingFile}
-                      className="w-full bg-slate-100 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl pl-24 pr-12 py-4 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all placeholder:text-slate-400 dark:placeholder:text-slate-600 shadow-2xl disabled:opacity-50"
-                      autoComplete="off"
-                    />
                     
+                    <AnimatePresence>
+                      {showGiphyPicker && (
+                        <motion.div 
+                          initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                          className="absolute bottom-full left-0 mb-4 w-[320px] sm:w-[400px] h-[450px] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl shadow-2xl overflow-hidden z-50 flex flex-col"
+                        >
+                          <div className="p-4 border-b border-slate-100 dark:border-white/5 flex flex-col gap-3">
+                            <div className="flex items-center justify-between">
+                              <div className="flex bg-slate-100 dark:bg-slate-800 rounded-lg p-1">
+                                <button
+                                  onClick={() => {
+                                    setIsStickerMode(false);
+                                    if (giphySearchQuery) searchGiphy(giphySearchQuery, false);
+                                  }}
+                                  className={cn(
+                                    "px-3 py-1 text-xs font-bold rounded-md transition-all",
+                                    !isStickerMode ? "bg-white dark:bg-slate-700 text-indigo-500 shadow-sm" : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+                                  )}
+                                >
+                                  GIFs
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setIsStickerMode(true);
+                                    if (giphySearchQuery) searchGiphy(giphySearchQuery, true);
+                                  }}
+                                  className={cn(
+                                    "px-3 py-1 text-xs font-bold rounded-md transition-all",
+                                    isStickerMode ? "bg-white dark:bg-slate-700 text-indigo-500 shadow-sm" : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+                                  )}
+                                >
+                                  Stickers
+                                </button>
+                              </div>
+                              <button 
+                                onClick={() => setShowGiphyPicker(false)}
+                                className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors"
+                              >
+                                <X className="w-5 h-5" />
+                              </button>
+                            </div>
+                            <div className="relative flex-1">
+                              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                              <input 
+                                type="text"
+                                placeholder={`Search ${isStickerMode ? 'Stickers' : 'Giphy'}...`}
+                                value={giphySearchQuery}
+                                onChange={(e) => {
+                                  setGiphySearchQuery(e.target.value);
+                                  searchGiphy(e.target.value, isStickerMode);
+                                }}
+                                className="w-full bg-slate-100 dark:bg-slate-800 border-none rounded-xl pl-10 pr-4 py-2 text-sm focus:ring-2 focus:ring-indigo-500/50 transition-all"
+                                autoFocus
+                              />
+                            </div>
+                          </div>
+                          <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
+                            {isSearchingGiphy ? (
+                              <div className="flex flex-col items-center justify-center h-full gap-3">
+                                <div className="w-8 h-8 border-4 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin" />
+                                <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Searching Giphy...</p>
+                              </div>
+                            ) : giphyResults.length > 0 ? (
+                              <div className="grid grid-cols-2 gap-2">
+                                {giphyResults.map((gif) => (
+                                  <button
+                                    key={gif.id}
+                                    onClick={() => {
+                                      handleSendMessage('', undefined, gif.images.fixed_height.url);
+                                      setShowGiphyPicker(false);
+                                    }}
+                                    className="relative aspect-video rounded-xl overflow-hidden group hover:ring-2 hover:ring-indigo-500 transition-all"
+                                  >
+                                    <img 
+                                      src={gif.images.fixed_height.url} 
+                                      alt={gif.title} 
+                                      className="w-full h-full object-cover"
+                                      referrerPolicy="no-referrer"
+                                    />
+                                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                      <Send className="w-6 h-6 text-white" />
+                                    </div>
+                                  </button>
+                                ))}
+                              </div>
+                            ) : (
+                              <div className="flex flex-col items-center justify-center h-full text-center p-6 space-y-3">
+                                <div className="w-12 h-12 bg-slate-100 dark:bg-slate-800 rounded-2xl flex items-center justify-center">
+                                  <Search className="w-6 h-6 text-slate-400" />
+                                </div>
+                                <p className="text-sm text-slate-500">
+                                  {giphySearchQuery ? "No GIFs found for this search" : "Search for GIFs to send to your friends"}
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                          <div className="p-3 bg-slate-50 dark:bg-slate-950 border-t border-slate-100 dark:border-white/5 flex items-center justify-center">
+                            <img src="https://giphy.com/static/img/powered_by_giphy_light.png" alt="Powered by Giphy" className="h-4 opacity-50" />
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+
                     <AnimatePresence>
                       {showMentions && (
                         <motion.div 
@@ -3465,22 +4219,23 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                       )}
                     </AnimatePresence>
 
-                    <button 
-                      type="button"
-                      onClick={startRecording}
-                      disabled={isUploadingVoice}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 p-2 text-slate-500 hover:text-indigo-400 transition-all"
-                    >
-                      <Mic className="w-5 h-5" />
-                    </button>
-                  </div>
-                  <button 
-                    type="submit"
-                    disabled={!newMessage.trim() || isUploadingVoice}
-                    className="p-4 bg-indigo-600 text-white rounded-2xl hover:bg-indigo-700 disabled:opacity-50 disabled:hover:bg-indigo-600 transition-all shadow-lg shadow-indigo-500/20 flex-shrink-0"
-                  >
-                    <Send className="w-5 h-5" />
-                  </button>
+                      <button 
+                        type="button"
+                        onClick={startRecording}
+                        disabled={isUploadingVoice}
+                        className="p-1.5 sm:p-2 text-slate-500 hover:text-indigo-500 transition-all"
+                      >
+                        <Mic className="w-4 h-4 sm:w-5 sm:h-5" />
+                      </button>
+                      
+                      <button 
+                        type="submit"
+                        disabled={!newMessage.trim() || isUploadingVoice}
+                        className="p-1.5 sm:p-2 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 disabled:opacity-50 transition-all shadow-md shadow-indigo-500/20"
+                      >
+                        <Send className="w-4 h-4 sm:w-5 sm:h-5" />
+                      </button>
+                    </div>
                 </form>
               </div>
             </div>
@@ -3574,6 +4329,17 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                           <Send className="w-4 h-4" />
                         </Button>
                       )}
+                      {activeRoom.created_by === user.id && member.id !== user.id && (
+                        <Button 
+                          variant="ghost" 
+                          size="icon" 
+                          className="w-8 h-8 text-red-400 hover:bg-red-500/10"
+                          onClick={() => handleKickMember(member.id)}
+                          title={`Kick ${member.username}`}
+                        >
+                          <X className="w-4 h-4" />
+                        </Button>
+                      )}
                       <div className={cn(
                         "w-2 h-2 rounded-full transition-all duration-300",
                         onlineUsers.has(member.id) 
@@ -3589,8 +4355,314 @@ export const ChatDashboard = ({ user }: { user: any }) => {
         )}
       </AnimatePresence>
 
+      {/* Thread Sidebar */}
+      <AnimatePresence>
+        {activeThreadId && (
+          <motion.aside
+            initial={{ width: 0, opacity: 0 }}
+            animate={{ width: 320, opacity: 1 }}
+            exit={{ width: 0, opacity: 0 }}
+            className="hidden lg:flex flex-col border-l border-slate-200 dark:border-white/5 bg-slate-50 dark:bg-[#0f172a] overflow-hidden flex-shrink-0"
+          >
+            <div className="p-4 border-b border-slate-200 dark:border-white/5 flex items-center justify-between bg-white dark:bg-[#020617]">
+              <div className="flex items-center gap-2">
+                <MessageSquare className="w-5 h-5 text-indigo-500" />
+                <h3 className="font-bold text-slate-900 dark:text-white">Thread</h3>
+              </div>
+              <button 
+                onClick={() => setActiveThreadId(null)}
+                className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              {(() => {
+                const parentMsg = messages.find(m => m.id === activeThreadId);
+                if (!parentMsg) return null;
+                const threadMessages = messages.filter(m => m.reply_to_id === activeThreadId && m.file_type === 'thread');
+                
+                return (
+                  <>
+                    {/* Parent Message */}
+                    <div className="flex gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-slate-200 dark:bg-slate-800 flex items-center justify-center flex-shrink-0 overflow-hidden">
+                        {parentMsg.profiles?.avatar_url ? (
+                          <img src={parentMsg.profiles.avatar_url} alt="Avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                        ) : (
+                          parentMsg.profiles?.username?.[0]?.toUpperCase() || '?'
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-sm font-bold text-slate-900 dark:text-white">
+                            {parentMsg.profiles?.username || 'Unknown'}
+                          </span>
+                          <span className="text-[10px] text-slate-500">
+                            {format(new Date(parentMsg.created_at), 'HH:mm')}
+                          </span>
+                        </div>
+                        <div className="text-sm text-slate-700 dark:text-slate-300">
+                          {parentMsg.image_url && (
+                            <div className="rounded-xl overflow-hidden mb-1 border border-white/10">
+                              <img 
+                                src={parentMsg.image_url} 
+                                alt="Shared image" 
+                                className="max-w-full max-h-[200px] object-contain cursor-pointer hover:scale-[1.02] transition-transform"
+                                onClick={() => window.open(parentMsg.image_url, '_blank')}
+                                referrerPolicy="no-referrer"
+                              />
+                            </div>
+                          )}
+                          {parentMsg.file_url && parentMsg.file_name && (
+                            <a 
+                              href={parentMsg.file_url} 
+                              target="_blank" 
+                              rel="noopener noreferrer"
+                              className="flex items-center gap-3 p-2 mb-2 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-100 dark:bg-slate-800/50 hover:bg-slate-200 dark:hover:bg-slate-800 transition-colors max-w-sm"
+                            >
+                              <div className="w-8 h-8 rounded-lg bg-indigo-500/10 text-indigo-500 flex items-center justify-center flex-shrink-0">
+                                <Paperclip className="w-4 h-4" />
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <p className="text-xs font-medium truncate text-slate-900 dark:text-white">{parentMsg.file_name}</p>
+                              </div>
+                            </a>
+                          )}
+                          {parentMsg.audio_url && (
+                            <div className="flex items-center gap-2 mb-2">
+                              <Volume2 className="w-4 h-4 text-indigo-500" />
+                              <span className="text-xs text-slate-500 font-mono">Voice Message</span>
+                            </div>
+                          )}
+                          {parentMsg.content && <ReactMarkdown>{parentMsg.content}</ReactMarkdown>}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-4 py-2">
+                      <div className="h-px flex-1 bg-slate-200 dark:bg-white/5" />
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                        {threadMessages.length} {threadMessages.length === 1 ? 'Reply' : 'Replies'}
+                      </span>
+                      <div className="h-px flex-1 bg-slate-200 dark:bg-white/5" />
+                    </div>
+
+                    {/* Thread Replies */}
+                    {threadMessages.map(msg => (
+                      <div key={msg.id} className="flex gap-3">
+                        <div className="w-8 h-8 rounded-lg bg-slate-200 dark:bg-slate-800 flex items-center justify-center flex-shrink-0 overflow-hidden">
+                          {msg.profiles?.avatar_url ? (
+                            <img src={msg.profiles.avatar_url} alt="Avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                          ) : (
+                            msg.profiles?.username?.[0]?.toUpperCase() || '?'
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="text-sm font-bold text-slate-900 dark:text-white">
+                              {msg.profiles?.username || 'Unknown'}
+                            </span>
+                            <span className="text-[10px] text-slate-500">
+                              {format(new Date(msg.created_at), 'HH:mm')}
+                            </span>
+                          </div>
+                          <div className="text-sm text-slate-700 dark:text-slate-300">
+                            {msg.image_url && (
+                              <div className="rounded-xl overflow-hidden mb-1 border border-white/10">
+                                <img 
+                                  src={msg.image_url} 
+                                  alt="Shared image" 
+                                  className="max-w-full max-h-[200px] object-contain cursor-pointer hover:scale-[1.02] transition-transform"
+                                  onClick={() => window.open(msg.image_url, '_blank')}
+                                  referrerPolicy="no-referrer"
+                                />
+                              </div>
+                            )}
+                            {msg.file_url && msg.file_name && (
+                              <a 
+                                href={msg.file_url} 
+                                target="_blank" 
+                                rel="noopener noreferrer"
+                                className="flex items-center gap-3 p-2 mb-2 rounded-xl border border-slate-200 dark:border-white/10 bg-slate-100 dark:bg-slate-800/50 hover:bg-slate-200 dark:hover:bg-slate-800 transition-colors max-w-sm"
+                              >
+                                <div className="w-8 h-8 rounded-lg bg-indigo-500/10 text-indigo-500 flex items-center justify-center flex-shrink-0">
+                                  <Paperclip className="w-4 h-4" />
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <p className="text-xs font-medium truncate text-slate-900 dark:text-white">{msg.file_name}</p>
+                                </div>
+                              </a>
+                            )}
+                            {msg.audio_url && (
+                              <div className="flex items-center gap-2 mb-2">
+                                <Volume2 className="w-4 h-4 text-indigo-500" />
+                                <span className="text-xs text-slate-500 font-mono">Voice Message</span>
+                              </div>
+                            )}
+                            {msg.content && <ReactMarkdown>{msg.content}</ReactMarkdown>}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </>
+                );
+              })()}
+            </div>
+            <div className="p-4 bg-white dark:bg-[#020617] border-t border-slate-200 dark:border-white/5">
+              <form 
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const input = e.currentTarget.elements.namedItem('threadInput') as HTMLInputElement;
+                  if (input.value.trim()) {
+                    handleSendMessage(input.value, undefined, undefined, undefined, undefined, undefined, undefined, activeThreadId);
+                    input.value = '';
+                  }
+                }}
+                className="relative"
+              >
+                <Input 
+                  name="threadInput"
+                  placeholder="Reply in thread..." 
+                  className="pr-10"
+                />
+                <button 
+                  type="submit"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-indigo-500 hover:bg-indigo-500/10 rounded-lg transition-colors"
+                >
+                  <Send className="w-4 h-4" />
+                </button>
+              </form>
+            </div>
+          </motion.aside>
+        )}
+      </AnimatePresence>
+
       {/* Modals */}
       <AnimatePresence>
+        {showVideoPreview && videoPreviewUrl && (
+          <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              className="bg-white dark:bg-slate-900 rounded-3xl overflow-hidden shadow-2xl max-w-md w-full"
+            >
+              <div className="p-4 border-b border-slate-100 dark:border-white/5 flex items-center justify-between">
+                <h3 className="font-bold text-slate-900 dark:text-white">Video Message Preview</h3>
+                <button onClick={cancelVideoRecording} className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="aspect-video bg-black flex items-center justify-center">
+                <video 
+                  src={videoPreviewUrl} 
+                  controls 
+                  autoPlay 
+                  className="max-h-full max-w-full"
+                />
+              </div>
+              <div className="p-4 flex items-center gap-3">
+                <Button 
+                  variant="outline" 
+                  onClick={cancelVideoRecording}
+                  className="flex-1"
+                >
+                  Discard
+                </Button>
+                <Button 
+                  onClick={handleUploadVideo}
+                  disabled={isUploadingFile}
+                  className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white"
+                >
+                  {isUploadingFile ? 'Sending...' : 'Send Video'}
+                </Button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
+        {showGlobalSearch && (
+          <div className="fixed inset-0 z-[120] flex items-start justify-center p-4 pt-[10vh] bg-black/80 backdrop-blur-sm" onClick={() => setShowGlobalSearch(false)}>
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9, y: -20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: -20 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white dark:bg-slate-900 rounded-3xl overflow-hidden shadow-2xl max-w-2xl w-full flex flex-col max-h-[80vh]"
+            >
+              <div className="p-4 border-b border-slate-100 dark:border-white/5 flex items-center gap-3">
+                <Search className="w-5 h-5 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Search all messages..."
+                  value={globalSearchQuery}
+                  onChange={(e) => setGlobalSearchQuery(e.target.value)}
+                  className="flex-1 bg-transparent border-none focus:ring-0 text-lg text-slate-900 dark:text-white placeholder:text-slate-400"
+                  autoFocus
+                />
+                <button onClick={() => setShowGlobalSearch(false)} className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
+                {isSearchingGlobal ? (
+                  <div className="flex flex-col items-center justify-center py-12 gap-3">
+                    <div className="w-8 h-8 border-4 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin" />
+                    <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Searching...</p>
+                  </div>
+                ) : globalSearchResults.length > 0 ? (
+                  <div className="space-y-4">
+                    {globalSearchResults.map(msg => {
+                      const room = rooms.find(r => r.id === msg.room_id);
+                      return (
+                        <div 
+                          key={msg.id} 
+                          className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/50 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer border border-slate-200 dark:border-white/5"
+                          onClick={() => {
+                            if (room) {
+                              setActiveRoom(room);
+                              setShowGlobalSearch(false);
+                            }
+                          }}
+                        >
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-2">
+                              <div className="w-6 h-6 rounded-full bg-slate-200 dark:bg-slate-700 flex items-center justify-center overflow-hidden">
+                                {msg.profiles?.avatar_url ? (
+                                  <img src={msg.profiles.avatar_url} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                                ) : (
+                                  <span className="text-[10px] font-bold">{msg.profiles?.username?.[0]?.toUpperCase() || '?'}</span>
+                                )}
+                              </div>
+                              <span className="text-sm font-bold text-slate-900 dark:text-white">{msg.profiles?.username}</span>
+                              <span className="text-xs text-slate-500">in {room?.is_direct ? 'DM' : `#${room?.name}`}</span>
+                            </div>
+                            <span className="text-xs text-slate-500">{format(new Date(msg.created_at), 'MMM d, HH:mm')}</span>
+                          </div>
+                          <div className="text-sm text-slate-700 dark:text-slate-300 line-clamp-2">
+                            <HighlightedText query={globalSearchQuery}>{msg.content}</HighlightedText>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : globalSearchQuery ? (
+                  <div className="flex flex-col items-center justify-center py-12 text-center">
+                    <Search className="w-12 h-12 text-slate-300 dark:text-slate-700 mb-4" />
+                    <p className="text-slate-500 dark:text-slate-400">No messages found for "{globalSearchQuery}"</p>
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center justify-center py-12 text-center">
+                    <MessageSquare className="w-12 h-12 text-slate-300 dark:text-slate-700 mb-4" />
+                    <p className="text-slate-500 dark:text-slate-400">Type to search across all your rooms</p>
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </div>
+        )}
+
         {showCreateModal && (
           <Modal title="Create Room" onClose={() => setShowCreateModal(false)}>
             <form 
@@ -3634,6 +4706,99 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                 Join Room
               </Button>
             </form>
+          </Modal>
+        )}
+
+        {showWorkspaceSettingsModal && (
+          <Modal title="Workspace Customization" onClose={() => setShowWorkspaceSettingsModal(false)}>
+            <div className="space-y-8">
+              {/* Theme Selection */}
+              <div className="space-y-4">
+                <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                  <Palette className="w-3 h-3" /> Chat Theme
+                </label>
+                <div className="grid grid-cols-2 gap-3">
+                  {[
+                    { id: 'default', name: 'Modern Indigo', color: 'bg-indigo-500' },
+                    { id: 'minimalist', name: 'Minimalist', color: 'bg-slate-500' },
+                    { id: 'dark-blue', name: 'Deep Space', color: 'bg-blue-900' },
+                    { id: 'forest', name: 'Forest Green', color: 'bg-emerald-600' },
+                  ].map((t) => (
+                    <button
+                      key={t.id}
+                      onClick={() => setChatTheme(t.id)}
+                      className={cn(
+                        "flex items-center gap-3 p-3 rounded-2xl border transition-all text-left group",
+                        chatTheme === t.id 
+                          ? "bg-indigo-500/10 border-indigo-500/40" 
+                          : "bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-white/5 hover:border-slate-300 dark:hover:border-white/10"
+                      )}
+                    >
+                      <div className={cn("w-8 h-8 rounded-lg shadow-lg", t.color)} />
+                      <span className={cn(
+                        "text-xs font-bold transition-colors",
+                        chatTheme === t.id ? "text-indigo-400" : "text-slate-600 dark:text-slate-400 group-hover:text-slate-900 dark:group-hover:text-slate-200"
+                      )}>{t.name}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Wallpaper Selection */}
+              <div className="space-y-4">
+                <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                  <ImageIcon className="w-3 h-3" /> Chat Wallpaper
+                </label>
+                <div className="grid grid-cols-3 gap-3">
+                  {[
+                    { id: 'none', name: 'None', url: '' },
+                    { id: 'abstract', name: 'Abstract', url: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=400&auto=format&fit=crop' },
+                    { id: 'nature', name: 'Nature', url: 'https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?q=80&w=400&auto=format&fit=crop' },
+                    { id: 'minimal', name: 'Minimal', url: 'https://images.unsplash.com/photo-1494438639946-1ebd1d20bf85?q=80&w=400&auto=format&fit=crop' },
+                    { id: 'gradient', name: 'Gradient', url: 'https://images.unsplash.com/photo-1557683316-973673baf926?q=80&w=400&auto=format&fit=crop' },
+                    { id: 'space', name: 'Space', url: 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?q=80&w=400&auto=format&fit=crop' },
+                  ].map((w) => (
+                    <button
+                      key={w.id}
+                      onClick={() => setChatWallpaper(w.url)}
+                      className={cn(
+                        "relative aspect-video rounded-xl overflow-hidden border-2 transition-all group",
+                        chatWallpaper === w.url 
+                          ? "border-indigo-500 shadow-lg shadow-indigo-500/20" 
+                          : "border-transparent hover:border-slate-300 dark:hover:border-white/10"
+                      )}
+                    >
+                      {w.url ? (
+                        <img src={w.url} alt={w.name} className="w-full h-full object-cover" />
+                      ) : (
+                        <div className="w-full h-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-[10px] font-bold text-slate-400">NONE</div>
+                      )}
+                      <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                        <span className="text-[10px] font-bold text-white uppercase tracking-widest">{w.name}</span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+                <div className="flex flex-col gap-2">
+                  <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest">Custom Wallpaper URL</label>
+                  <div className="flex gap-2">
+                    <Input 
+                      placeholder="https://example.com/image.jpg" 
+                      value={chatWallpaper}
+                      onChange={(e) => setChatWallpaper(e.target.value)}
+                      className="flex-1"
+                    />
+                    <Button variant="outline" onClick={() => setChatWallpaper('')} size="sm">Clear</Button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="pt-6 border-t border-slate-100 dark:border-white/5">
+                <Button className="w-full" onClick={() => setShowWorkspaceSettingsModal(false)}>
+                  Save Changes
+                </Button>
+              </div>
+            </div>
           </Modal>
         )}
 
@@ -3972,14 +5137,57 @@ export const ChatDashboard = ({ user }: { user: any }) => {
 
                   <div className="space-y-2">
                     <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                      <ImageIcon className="w-3 h-3" /> Custom Wallpaper URL
+                      <ImageIcon className="w-3 h-3" /> Custom Wallpaper
                     </label>
-                    <Input 
-                      placeholder="https://example.com/image.jpg" 
-                      value={chatWallpaper}
-                      onChange={(e) => setChatWallpaper(e.target.value)}
-                    />
-                    <p className="text-[10px] text-slate-400">Leave empty to use the selected theme's background.</p>
+                    <div className="flex flex-col gap-3">
+                      <div className="flex items-center gap-3">
+                        <Input 
+                          placeholder="https://example.com/image.jpg" 
+                          value={chatWallpaper}
+                          onChange={(e) => setChatWallpaper(e.target.value)}
+                          className="flex-1"
+                        />
+                        <label className="flex-shrink-0 p-2.5 rounded-xl bg-slate-100 dark:bg-white/5 border border-slate-200 dark:border-white/10 hover:bg-slate-200 dark:hover:bg-white/10 cursor-pointer transition-all">
+                          <Upload className="w-4 h-4 text-slate-500" />
+                          <input 
+                            type="file" 
+                            className="hidden" 
+                            accept="image/*"
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              if (file) {
+                                setWallpaperFile(file);
+                                setWallpaperPreview(URL.createObjectURL(file));
+                                setChatWallpaper(''); // Clear URL if uploading
+                              }
+                            }}
+                          />
+                        </label>
+                      </div>
+                      
+                      {(wallpaperPreview || chatWallpaper) && (
+                        <div className="relative w-full h-24 rounded-xl overflow-hidden border border-slate-200 dark:border-white/10">
+                          <img 
+                            src={wallpaperPreview || chatWallpaper} 
+                            alt="Wallpaper Preview" 
+                            className="w-full h-full object-cover"
+                            referrerPolicy="no-referrer"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setWallpaperFile(null);
+                              setWallpaperPreview(null);
+                              setChatWallpaper('');
+                            }}
+                            className="absolute top-1 right-1 p-1 bg-black/50 hover:bg-black/70 rounded-full text-white transition-all"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </div>
+                      )}
+                      <p className="text-[10px] text-slate-400">Upload an image or provide a URL. Leave empty to use theme default.</p>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -4446,3 +5654,5 @@ const Modal = ({ title, children, onClose }: { title: string, children: React.Re
     </motion.div>
   </div>
 );
+
+export default ChatDashboard;

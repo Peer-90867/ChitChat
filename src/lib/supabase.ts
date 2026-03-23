@@ -15,3 +15,34 @@ export const supabase = createClient(
 );
 
 export const hasValidSupabase = !isPlaceholder;
+
+export const ensureBucketExists = async (bucketName: string) => {
+  if (!hasValidSupabase) return false;
+  
+  try {
+    const { data: bucket, error: getError } = await supabase.storage.getBucket(bucketName);
+    
+    if (getError) {
+      if (getError.message.toLowerCase().includes('not found')) {
+        const { error: createError } = await supabase.storage.createBucket(bucketName, {
+          public: true,
+          allowedMimeTypes: ['image/png', 'image/jpeg', 'image/gif', 'image/webp'],
+          fileSizeLimit: 5242880 // 5MB
+        });
+        
+        if (createError) {
+          console.error(`Failed to create bucket ${bucketName}:`, createError);
+          return false;
+        }
+        return true;
+      }
+      console.error(`Error checking bucket ${bucketName}:`, getError);
+      return false;
+    }
+    
+    return !!bucket;
+  } catch (err) {
+    console.error(`Unexpected error ensuring bucket ${bucketName}:`, err);
+    return false;
+  }
+};
