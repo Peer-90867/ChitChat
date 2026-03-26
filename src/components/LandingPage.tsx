@@ -1,8 +1,9 @@
 import * as React from 'react';
 import { motion } from 'motion/react';
 import { Button } from './ui/Button';
-import { MessageSquare, Shield, Zap, ArrowRight, Sun, Moon } from 'lucide-react';
+import { Shield, Zap, ArrowRight, Sun, Moon } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext';
+import { Logo } from './Logo';
 
 export const LandingPage = ({ onGetStarted }: { onGetStarted: () => void }) => {
   const { theme, toggleTheme } = useTheme();
@@ -13,10 +14,10 @@ export const LandingPage = ({ onGetStarted }: { onGetStarted: () => void }) => {
       <nav className="fixed top-0 w-full z-50 border-b border-slate-200 dark:border-white/5 bg-white/80 dark:bg-[#020617]/80 backdrop-blur-md transition-colors duration-300">
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center">
-              <MessageSquare className="w-5 h-5 text-white" />
+            <div className="w-8 h-8 flex items-center justify-center">
+              <Logo className="w-8 h-8 text-indigo-600 dark:text-indigo-500" />
             </div>
-            <span className="font-bold text-xl tracking-tight text-slate-900 dark:text-white">ChitChat</span>
+            <span className="font-bold text-xl tracking-tight text-slate-900 dark:text-white">Nex Chat</span>
           </div>
           <div className="flex items-center gap-4">
             <Button
@@ -64,7 +65,7 @@ export const LandingPage = ({ onGetStarted }: { onGetStarted: () => void }) => {
             transition={{ duration: 0.5, delay: 0.2 }}
             className="text-lg md:text-xl text-slate-600 dark:text-slate-400 max-w-2xl mx-auto"
           >
-            ChitChat is the modern real-time communication platform for teams and friends. 
+            Nex Chat is the modern real-time communication platform for teams and friends. 
             Secure, fast, and beautifully designed.
           </motion.p>
 
@@ -99,7 +100,7 @@ export const LandingPage = ({ onGetStarted }: { onGetStarted: () => void }) => {
               description="Create secure rooms with unique codes. Only those with the code can join."
             />
             <FeatureCard 
-              icon={<MessageSquare className="w-6 h-6 text-indigo-500 dark:text-indigo-400" />}
+              icon={<Logo className="w-6 h-6 text-indigo-500 dark:text-indigo-400" />}
               title="Modern Experience"
               description="A premium UI inspired by the best SaaS tools, optimized for speed and focus."
             />
@@ -110,7 +111,7 @@ export const LandingPage = ({ onGetStarted }: { onGetStarted: () => void }) => {
       {/* Footer */}
       <footer className="py-12 px-4 border-t border-slate-200 dark:border-white/5 text-center transition-colors duration-300">
         <p className="text-slate-500 dark:text-slate-500 text-sm">
-          © 2026 ChitChat. Built for the modern web.
+          © 2026 Nex Chat. Built for the modern web.
         </p>
       </footer>
     </div>

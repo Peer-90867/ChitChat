@@ -3,7 +3,7 @@ import { supabase } from '@/src/lib/supabase';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { motion } from 'motion/react';
-import { MessageSquare } from 'lucide-react';
+import { Logo } from '../Logo';
 
 export const AuthForm = () => {
   const [isLogin, setIsLogin] = useState(true);
@@ -55,14 +55,14 @@ export const AuthForm = () => {
         className="w-full max-w-md space-y-8 p-8 rounded-2xl bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 backdrop-blur-xl shadow-xl dark:shadow-none transition-colors duration-300"
       >
         <div className="text-center space-y-2">
-          <div className="inline-flex items-center justify-center w-12 h-12 bg-indigo-600 rounded-xl mb-4">
-            <MessageSquare className="w-6 h-6 text-white" />
+          <div className="inline-flex items-center justify-center w-12 h-12 mb-4">
+            <Logo className="w-12 h-12 text-indigo-600 dark:text-indigo-500" />
           </div>
           <h2 className="text-3xl font-bold text-slate-900 dark:text-white">
             {isLogin ? 'Welcome back' : 'Create account'}
           </h2>
           <p className="text-slate-600 dark:text-slate-400">
-            {isLogin ? 'Enter your credentials to access ChitChat' : 'Join the premium chat experience'}
+            {isLogin ? 'Enter your credentials to access Nex Chat' : 'Join the premium chat experience'}
           </p>
         </div>
 

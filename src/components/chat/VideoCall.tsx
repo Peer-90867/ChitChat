@@ -1,7 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
-import DailyIframe from '@daily-co/daily-js';
-import { Mic, MicOff, Video, VideoOff, PhoneOff, Monitor } from 'lucide-react';
-import { cn } from '@/src/lib/utils';
+import React, { useEffect, useRef } from 'react';
+import { PhoneOff } from 'lucide-react';
 
 interface VideoCallProps {
   roomUrl: string;
@@ -9,103 +7,88 @@ interface VideoCallProps {
 }
 
 export const VideoCall: React.FC<VideoCallProps> = ({ roomUrl, onLeave }) => {
-  const [isMuted, setIsMuted] = useState(false);
-  const [isVideoOff, setIsVideoOff] = useState(false);
-  const [isScreenSharing, setIsScreenSharing] = useState(false);
-  const [participants, setParticipants] = useState<any[]>([]);
-  const callFrameRef = useRef<any>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const apiRef = useRef<any>(null);
 
   useEffect(() => {
-    const callFrame = DailyIframe.createFrame({
-      showLeaveButton: true,
-      iframeStyle: {
-        position: 'fixed',
-        top: '0',
-        left: '0',
-        width: '100%',
-        height: '100%',
-        border: '0',
-        zIndex: '1000',
-      },
-    });
+    let isMounted = true;
 
-    callFrameRef.current = callFrame;
-
-    callFrame.join({ url: roomUrl });
-
-    const updateParticipants = () => {
-      setParticipants(Object.values(callFrame.participants()));
+    const loadJitsiScript = () => {
+      return new Promise<void>((resolve, reject) => {
+        if ((window as any).JitsiMeetExternalAPI) {
+          resolve();
+          return;
+        }
+        const script = document.createElement('script');
+        script.src = 'https://meet.jit.si/external_api.js';
+        script.async = true;
+        script.onload = () => resolve();
+        script.onerror = () => reject(new Error('Failed to load Jitsi script'));
+        document.body.appendChild(script);
+      });
     };
 
-    callFrame.on('left-meeting', onLeave);
-    callFrame.on('participant-updated', updateParticipants);
-    callFrame.on('participant-joined', updateParticipants);
-    callFrame.on('participant-left', updateParticipants);
+    loadJitsiScript()
+      .then(() => {
+        if (!isMounted || !containerRef.current) return;
+
+        const domain = 'meet.jit.si';
+        const options = {
+          roomName: roomUrl,
+          width: '100%',
+          height: '100%',
+          parentNode: containerRef.current,
+          configOverwrite: {
+            startWithAudioMuted: false,
+            startWithVideoMuted: false,
+            prejoinPageEnabled: false,
+          },
+          interfaceConfigOverwrite: {
+            SHOW_JITSI_WATERMARK: false,
+            SHOW_WATERMARK_FOR_GUESTS: false,
+            TOOLBAR_BUTTONS: [
+              'microphone', 'camera', 'closedcaptions', 'desktop', 'fullscreen',
+              'fodeviceselection', 'hangup', 'profile', 'chat', 'recording',
+              'livestreaming', 'etherpad', 'sharedvideo', 'settings', 'raisehand',
+              'videoquality', 'filmstrip', 'invite', 'feedback', 'stats', 'shortcuts',
+              'tileview', 'videobackgroundblur', 'download', 'help', 'mute-everyone',
+              'security'
+            ],
+          },
+        };
+
+        const api = new (window as any).JitsiMeetExternalAPI(domain, options);
+        apiRef.current = api;
+
+        api.addListener('videoConferenceLeft', () => {
+          onLeave();
+        });
+        
+        api.addListener('readyToClose', () => {
+          onLeave();
+        });
+      })
+      .catch(console.error);
 
     return () => {
-      callFrame.destroy();
+      isMounted = false;
+      if (apiRef.current) {
+        apiRef.current.dispose();
+      }
     };
   }, [roomUrl, onLeave]);
 
-  const toggleMute = () => {
-    const callFrame = callFrameRef.current;
-    if (callFrame) {
-      callFrame.setLocalAudio(!isMuted);
-      setIsMuted(!isMuted);
-    }
-  };
-
-  const toggleVideo = () => {
-    const callFrame = callFrameRef.current;
-    if (callFrame) {
-      callFrame.setLocalVideo(!isVideoOff);
-      setIsVideoOff(!isVideoOff);
-    }
-  };
-
-  const toggleScreenShare = () => {
-    const callFrame = callFrameRef.current;
-    if (callFrame) {
-      if (isScreenSharing) {
-        callFrame.stopScreenShare();
-      } else {
-        callFrame.startScreenShare();
-      }
-      setIsScreenSharing(!isScreenSharing);
-    }
-  };
-
-  const leaveCall = () => {
-    const callFrame = callFrameRef.current;
-    if (callFrame) {
-      callFrame.leave();
-    }
-  };
-
   return (
-    <div className="fixed bottom-4 right-4 z-[1001] flex flex-col gap-2">
-      <div className="bg-slate-900 p-2 rounded-xl shadow-lg flex gap-2">
-        <button onClick={toggleMute} className="p-2 rounded-lg bg-slate-800 text-white hover:bg-slate-700">
-          {isMuted ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
-        </button>
-        <button onClick={toggleVideo} className="p-2 rounded-lg bg-slate-800 text-white hover:bg-slate-700">
-          {isVideoOff ? <VideoOff className="w-5 h-5" /> : <Video className="w-5 h-5" />}
-        </button>
-        <button onClick={toggleScreenShare} className={cn("p-2 rounded-lg bg-slate-800 text-white hover:bg-slate-700", isScreenSharing && "bg-indigo-600")}>
-          <Monitor className="w-5 h-5" />
-        </button>
-        <button onClick={leaveCall} className="p-2 rounded-lg bg-red-600 text-white hover:bg-red-700">
-          <PhoneOff className="w-5 h-5" />
-        </button>
-      </div>
-      <div className="bg-slate-900/80 p-2 rounded-xl shadow-lg text-white text-xs">
-        {participants.map(p => (
-          <div key={p.session_id} className="flex items-center gap-2">
-            <span className={cn("w-2 h-2 rounded-full", p.audio ? "bg-emerald-500" : "bg-red-500")} />
-            {p.user_name || 'Guest'} {p.audio ? '' : '(Muted)'}
-          </div>
-        ))}
-      </div>
+    <div className="fixed inset-0 z-[1000] bg-black flex flex-col">
+      <div ref={containerRef} className="flex-1 w-full h-full" />
+      <button
+        onClick={onLeave}
+        className="absolute bottom-6 left-1/2 -translate-x-1/2 px-6 py-3 bg-red-600 hover:bg-red-700 text-white rounded-full shadow-lg flex items-center gap-2 transition-colors z-[1001]"
+      >
+        <PhoneOff className="w-5 h-5" />
+        <span className="font-medium">Leave Call</span>
+      </button>
     </div>
   );
 };
+

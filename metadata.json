@@ -1,5 +1,5 @@
 {
-  "name": "ChitChat",
+  "name": "Nex Chat",
   "description": "A premium real-time chat application with private rooms, instant messaging, and a modern SaaS UI.",
-  "requestFramePermissions": ["microphone"]
+  "requestFramePermissions": ["microphone", "camera", "display-capture"]
 }

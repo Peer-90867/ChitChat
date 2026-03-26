@@ -1,12 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { GoogleGenAI } from "@google/genai";
 import { useInView } from 'react-intersection-observer';
+
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 import { supabase, hasValidSupabase, ensureBucketExists } from '@/src/lib/supabase';
-import { Room, Message, Profile, Story } from '@/src/types';
+import { Room, Message, Profile, Reaction } from '@/src/types';
 import { cn } from '@/src/lib/utils';
 import { AudioPlayer } from './AudioPlayer';
 import { VideoCall } from './VideoCall';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
+import { Logo } from '../Logo';
 import { 
   MessageSquare, 
   Plus, 
@@ -57,6 +61,11 @@ import {
   CornerUpLeft,
   Palette,
   Video,
+  Lock,
+  MapPin,
+  Navigation,
+  Languages,
+  Sparkles,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
@@ -133,6 +142,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     localStorage.setItem('roomSortOrder', sortBy);
   }, [sortBy]);
   const [activeRoom, setActiveRoom] = useState<Room | null>(null);
+  const [activeTab, setActiveTab] = useState<'chats' | 'status' | 'communities'>('chats');
   const [messages, setMessages] = useState<Message[]>([]);
   const [members, setMembers] = useState<Profile[]>([]);
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -156,6 +166,9 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const [copied, setCopied] = useState(false);
   const [showMobileRoomMenu, setShowMobileRoomMenu] = useState(false);
   const [showMembers, setShowMembers] = useState(false);
+  const [rightSidebarTab, setRightSidebarTab] = useState<'members' | 'media'>('members');
+  const [mediaFilter, setMediaFilter] = useState<'all' | 'images' | 'videos' | 'files'>('all');
+  const [mediaSort, setMediaSort] = useState<'newest' | 'oldest'>('newest');
   const [showNewDMModal, setShowNewDMModal] = useState(false);
   const [dmSearchQuery, setDmSearchQuery] = useState('');
   const [dmSearchResults, setDmSearchResults] = useState<Profile[]>([]);
@@ -205,15 +218,106 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const [isSearchingGiphy, setIsSearchingGiphy] = useState(false);
   const [isStickerMode, setIsStickerMode] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
+  const [showMap, setShowMap] = useState(false);
+  const [userLocation, setUserLocation] = useState<{lat: number, lng: number} | null>(null);
+  const [isTranslating, setIsTranslating] = useState<string | null>(null);
+  const [showCommunityModal, setShowCommunityModal] = useState(false);
+  const [communityName, setCommunityName] = useState('');
+  const [roomType, setRoomType] = useState<'group' | 'channel' | 'community'>('group');
+  const [isRecordingCall, setIsRecordingCall] = useState(false);
+  const [showRecordConsent, setShowRecordConsent] = useState(false);
+  const callMediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const callAudioChunksRef = useRef<Blob[]>([]);
   const [recordingTime, setRecordingTime] = useState(0);
   const recordingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   
-  const [isRecordingCall, setIsRecordingCall] = useState(false);
-  const [showRecordConsent, setShowRecordConsent] = useState(false);
-  const callMediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const callAudioChunksRef = useRef<Blob[]>([]);
+  const [showScheduleModal, setShowScheduleModal] = useState(false);
+  const [scheduledAt, setScheduledAt] = useState<string | null>(null);
+  const [isTranscribing, setIsTranscribing] = useState<string | null>(null);
+  const [showWallpaperModal, setShowWallpaperModal] = useState(false);
+  const [customWallpaper, setCustomWallpaper] = useState<string>(() => {
+    return localStorage.getItem('chatWallpaper') || '';
+  });
+
+  const handleVotePoll = async (messageId: string, optionId: string) => {
+    try {
+      const message = messages.find(m => m.id === messageId);
+      if (!message || !message.poll) return;
+
+      const updatedOptions = message.poll.options.map(opt => {
+        if (opt.id === optionId) {
+          const hasVoted = opt.votes.includes(user.id);
+          if (hasVoted) {
+            return { ...opt, votes: opt.votes.filter(id => id !== user.id) };
+          } else {
+            return { ...opt, votes: [...opt.votes, user.id] };
+          }
+        }
+        // If not multiple choice, remove vote from other options
+        if (!message.poll?.is_multiple_choice && opt.id !== optionId) {
+          return { ...opt, votes: opt.votes.filter(id => id !== user.id) };
+        }
+        return opt;
+      });
+
+      const { error } = await supabase
+        .from('messages')
+        .update({ poll: { ...message.poll, options: updatedOptions } })
+        .eq('id', messageId);
+
+      if (error) throw error;
+    } catch (error: any) {
+      console.error('Error voting on poll:', error);
+      showToast('Failed to vote', 'error');
+    }
+  };
+
+  const transcribeAudio = async (messageId: string, audioUrl: string) => {
+    setIsTranscribing(messageId);
+    try {
+      const response = await fetch(audioUrl);
+      const blob = await response.blob();
+      const reader = new FileReader();
+      
+      const base64Audio = await new Promise<string>((resolve) => {
+        reader.onloadend = () => {
+          const base64 = (reader.result as string).split(',')[1];
+          resolve(base64);
+        };
+        reader.readAsDataURL(blob);
+      });
+
+      const result = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: [
+          {
+            parts: [
+              { text: "Transcribe this audio message accurately. Return only the transcription text." },
+              { inlineData: { mimeType: "audio/webm", data: base64Audio } }
+            ]
+          }
+        ]
+      });
+
+      const transcription = result.text;
+      if (transcription) {
+        const { error } = await supabase
+          .from('messages')
+          .update({ transcription })
+          .eq('id', messageId);
+        
+        if (error) throw error;
+        showToast('Audio transcribed!');
+      }
+    } catch (error: any) {
+      console.error('Error transcribing audio:', error);
+      showToast('Failed to transcribe audio', 'error');
+    } finally {
+      setIsTranscribing(null);
+    }
+  };
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; messageId: string } | null>(null);
   const [roomContextMenu, setRoomContextMenu] = useState<{ x: number; y: number; roomId: string } | null>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
@@ -233,9 +337,6 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const [forwardingMessage, setForwardingMessage] = useState<Message | null>(null);
   const [showForwardModal, setShowForwardModal] = useState(false);
-  const [stories, setStories] = useState<Story[]>([]);
-  const [showStoryModal, setShowStoryModal] = useState<Story | null>(null);
-  const [showCreateStoryModal, setShowCreateStoryModal] = useState(false);
   const MESSAGES_PER_PAGE = 30;
 
   const groupRooms = rooms.filter(r => !r.is_direct);
@@ -447,7 +548,6 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   useEffect(() => {
     fetchProfile();
     fetchRooms();
-    fetchStories();
     
     // Set initial members visibility
     if (window.innerWidth >= 1024) {
@@ -512,6 +612,159 @@ export const ChatDashboard = ({ user }: { user: any }) => {
       window.removeEventListener('scroll', handleScroll, true);
     };
   }, []);
+
+  const isFetchingRef = useRef(false);
+
+  const fetchMessages = async (roomId: string, isPolling = false, before?: string) => {
+    if (isFetchingRef.current && isPolling) return;
+    if (isLoadingMore && before) return;
+    
+    if (before) setIsLoadingMore(true);
+    if (isPolling) isFetchingRef.current = true;
+
+    try {
+      let query = supabase
+        .from('messages')
+        .select(`
+          *,
+          reactions (*),
+          reply_to_message:reply_to_id(*)
+        `)
+        .eq('room_id', roomId)
+        .order('created_at', { ascending: false })
+        .limit(isPolling ? 10 : MESSAGES_PER_PAGE);
+
+      if (before) {
+        query = query.lt('created_at', before);
+      }
+
+      const { data: messagesData, error: messagesError } = await query;
+      
+      if (messagesError) throw messagesError;
+      
+      if (messagesData) {
+        const filteredMessages = messagesData.filter(m => !m.scheduled_at || new Date(m.scheduled_at) <= new Date());
+        const chronMessages = [...filteredMessages].reverse();
+        
+        // Collect all user IDs from both messages and reply-to messages
+        const userIds = new Set<string>();
+        messagesData.forEach(m => {
+          if (m.user_id) userIds.add(m.user_id);
+          if (m.reply_to_message?.user_id) userIds.add(m.reply_to_message.user_id);
+        });
+        
+        const { data: profilesData, error: profilesError } = await supabase
+          .from('profiles')
+          .select('*')
+          .in('id', Array.from(userIds));
+          
+        if (profilesError) throw profilesError;
+        
+        const messagesWithProfiles = chronMessages.map(m => {
+          const profile = profilesData?.find(p => p.id === m.user_id);
+          const replyToProfile = m.reply_to_message 
+            ? profilesData?.find(p => p.id === m.reply_to_message.user_id)
+            : null;
+            
+          return {
+            ...m,
+            profiles: profile,
+            reply_to_message: m.reply_to_message 
+              ? { ...m.reply_to_message, profiles: replyToProfile }
+              : null
+          };
+        });
+        
+        if (before) {
+          const container = messagesContainerRef.current;
+          const oldScrollHeight = container?.scrollHeight || 0;
+
+          setMessages(prev => [...messagesWithProfiles, ...prev]);
+          setHasMore(messagesData.length === MESSAGES_PER_PAGE);
+          
+          setTimeout(() => {
+            if (container) {
+              container.scrollTop = container.scrollHeight - oldScrollHeight;
+            }
+          }, 0);
+        } else {
+          // When polling, we only want to add NEW messages, not replace everything
+          if (isPolling) {
+            setMessages(prev => {
+              const existingIds = new Set(prev.map(m => m.id));
+              const newMessages = messagesWithProfiles.filter(m => !existingIds.has(m.id));
+              if (newMessages.length === 0) return prev;
+              return [...prev, ...newMessages].sort((a, b) => 
+                new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+              );
+            });
+          } else {
+            setMessages(messagesWithProfiles);
+            setHasMore(messagesData.length === MESSAGES_PER_PAGE);
+            
+            setTimeout(() => {
+              if (messagesContainerRef.current) {
+                messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
+              }
+            }, 100);
+          }
+        }
+
+        markMessagesAsRead(roomId);
+      }
+    } catch (error: any) {
+      console.error('Error fetching messages:', error);
+      if (!isPolling) {
+        showToast(`Failed to load message history: ${error.message || 'Unknown error'}`, 'error');
+      }
+    } finally {
+      if (before) setIsLoadingMore(false);
+      if (isPolling) isFetchingRef.current = false;
+    }
+  };
+
+  const markMessagesAsRead = async (roomId: string) => {
+    if (!user || !document.hasFocus()) return;
+
+    const { error } = await supabase.rpc('mark_messages_as_read', {
+      p_room_id: roomId,
+      p_user_id: user.id
+    });
+
+    if (error) {
+      console.error('Error marking messages as read:', error);
+    } else {
+      // Update local rooms state to clear unread count
+      setRooms(prev => prev.map(r => r.id === roomId ? { ...r, unread_count: 0 } : r));
+    }
+  };
+
+  const fetchMembers = async (roomId: string) => {
+    try {
+      const { data: memberData, error: memberError } = await supabase
+        .from('room_members')
+        .select('user_id')
+        .eq('room_id', roomId);
+      
+      if (memberError) throw memberError;
+      
+      if (memberData && memberData.length > 0) {
+        const userIds = memberData.map(m => m.user_id);
+        const { data: profileData, error: profileError } = await supabase
+          .from('profiles')
+          .select('*')
+          .in('id', userIds);
+        
+        if (profileError) throw profileError;
+        setMembers(profileData || []);
+      } else {
+        setMembers([]);
+      }
+    } catch (error: any) {
+      console.error('Error fetching members:', error);
+      showToast(`Failed to load room members: ${error.message || 'Unknown error'}`, 'error');
+    }
+  };
 
   useEffect(() => {
     if (activeRoom) {
@@ -629,9 +882,26 @@ export const ChatDashboard = ({ user }: { user: any }) => {
             schema: 'public',
             table: 'reactions',
           },
-          async (payload) => {
-            // Refresh messages to get updated reactions
-            if (activeRoom) fetchMessages(activeRoom.id);
+          (payload) => {
+            setMessages(prev => prev.map(msg => {
+              if (payload.eventType === 'INSERT' && msg.id === payload.new.message_id) {
+                const exists = msg.reactions?.some(r => r.id === payload.new.id);
+                if (exists) return msg;
+                return {
+                  ...msg,
+                  reactions: [...(msg.reactions || []), payload.new as Reaction]
+                };
+              } else if (payload.eventType === 'DELETE') {
+                const hasReaction = msg.reactions?.some(r => r.id === payload.old.id);
+                if (hasReaction) {
+                  return {
+                    ...msg,
+                    reactions: (msg.reactions || []).filter(r => r.id !== payload.old.id)
+                  };
+                }
+              }
+              return msg;
+            }));
           }
         )
         .on('presence', { event: 'sync' }, () => {
@@ -691,10 +961,15 @@ export const ChatDashboard = ({ user }: { user: any }) => {
           }
         });
 
-      // Polling fallback: Refresh messages every 0.3 seconds as requested
-      // Removed polling interval to improve performance as real-time subscriptions are sufficient.
+      // Polling fallback: Refresh messages every 0.02 seconds as requested for maximum speed
+      const pollingInterval = setInterval(() => {
+        if (activeRoom) {
+          fetchMessages(activeRoom.id, true);
+        }
+      }, 20);
 
       return () => {
+        clearInterval(pollingInterval);
         supabase.removeChannel(channel);
         activeChannelRef.current = null;
       };
@@ -715,8 +990,9 @@ export const ChatDashboard = ({ user }: { user: any }) => {
         async (payload) => {
           const newMessage = payload.new as Message;
           
-          // Don't notify for own messages
+          // Don't notify for own messages or future scheduled messages
           if (newMessage.user_id === user.id) return;
+          if (newMessage.scheduled_at && new Date(newMessage.scheduled_at) > new Date()) return;
           
           // Check if message is in one of the user's rooms
           const room = rooms.find(r => r.id === newMessage.room_id);
@@ -1100,45 +1376,6 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     }
   };
 
-  const handlePostStory = async (mediaUrl: string, mediaType: 'image' | 'video', caption?: string) => {
-    if (!user) return;
-    try {
-      const { error } = await supabase
-        .from('stories')
-        .insert([{
-          user_id: user.id,
-          media_url: mediaUrl,
-          media_type: mediaType,
-          caption
-        }]);
-
-      if (error) throw error;
-      showToast('Story posted!');
-      fetchStories();
-      setShowCreateStoryModal(false);
-    } catch (error) {
-      console.error('Error posting story:', error);
-      showToast('Failed to post story', 'error');
-    }
-  };
-
-  const handleViewStory = async (storyId: string) => {
-    if (!user) return;
-    try {
-      const { error } = await supabase
-        .from('story_views')
-        .insert([{
-          story_id: storyId,
-          user_id: user.id
-        }]);
-
-      if (error && error.code !== '23505') throw error; // Ignore unique constraint error
-      fetchStories();
-    } catch (error) {
-      console.error('Error viewing story:', error);
-    }
-  };
-
   const toggleVanishMode = async () => {
     if (!activeRoom) return;
     try {
@@ -1152,22 +1389,6 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     } catch (error) {
       console.error('Error toggling vanish mode:', error);
       showToast('Failed to toggle vanish mode', 'error');
-    }
-  };
-
-  const markMessagesAsRead = async (roomId: string) => {
-    if (!user || !document.hasFocus()) return;
-
-    const { error } = await supabase.rpc('mark_messages_as_read', {
-      p_room_id: roomId,
-      p_user_id: user.id
-    });
-
-    if (error) {
-      console.error('Error marking messages as read:', error);
-    } else {
-      // Update local rooms state to clear unread count
-      setRooms(prev => prev.map(r => r.id === roomId ? { ...r, unread_count: 0 } : r));
     }
   };
 
@@ -1230,30 +1451,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     }
   };
 
-  const addReaction = async (messageId: string, emoji: string) => {
-    const { error } = await supabase
-      .from('reactions')
-      .insert({
-        message_id: messageId,
-        user_id: user.id,
-        emoji
-      });
 
-    if (error) {
-      showToast('Failed to add reaction', 'error');
-    }
-  };
-
-  const removeReaction = async (reactionId: string) => {
-    const { error } = await supabase
-      .from('reactions')
-      .delete()
-      .eq('id', reactionId);
-
-    if (error) {
-      showToast('Failed to remove reaction', 'error');
-    }
-  };
 
   const extractUrl = (text: string) => {
     const urlRegex = /(https?:\/\/[^\s]+)/g;
@@ -1462,26 +1660,6 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     }
   };
 
-  const fetchStories = async () => {
-    if (!user) return;
-    try {
-      const { data, error } = await supabase
-        .from('stories')
-        .select(`
-          *,
-          profiles (*),
-          story_views (*)
-        `)
-        .gt('expires_at', new Date().toISOString())
-        .order('created_at', { ascending: false });
-
-      if (error) throw error;
-      setStories(data || []);
-    } catch (error) {
-      console.error('Error fetching stories:', error);
-    }
-  };
-
   const searchUsers = async (query: string) => {
     if (!query.trim()) {
       setDmSearchResults([]);
@@ -1626,142 +1804,6 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     } catch (error: any) {
       console.error('Error starting DM:', error);
       showToast(`Failed to start direct message: ${error.message || 'Unknown error'}`, 'error');
-    }
-  };
-
-  const isFetchingRef = useRef(false);
-
-  const fetchMessages = async (roomId: string, isPolling = false, before?: string) => {
-    if (isFetchingRef.current && isPolling) return;
-    if (isLoadingMore && before) return;
-    
-    if (before) setIsLoadingMore(true);
-    if (isPolling) isFetchingRef.current = true;
-
-    try {
-      let query = supabase
-        .from('messages')
-        .select(`
-          *,
-          reactions (*),
-          reply_to_message:reply_to_id(*)
-        `)
-        .eq('room_id', roomId)
-        .order('created_at', { ascending: false })
-        .limit(MESSAGES_PER_PAGE);
-
-      if (before) {
-        query = query.lt('created_at', before);
-      }
-
-      const { data: messagesData, error: messagesError } = await query;
-      
-      if (messagesError) throw messagesError;
-      
-      if (messagesData) {
-        const chronMessages = [...messagesData].reverse();
-        
-        // Collect all user IDs from both messages and reply-to messages
-        const userIds = new Set<string>();
-        messagesData.forEach(m => {
-          if (m.user_id) userIds.add(m.user_id);
-          if (m.reply_to_message?.user_id) userIds.add(m.reply_to_message.user_id);
-        });
-        
-        const { data: profilesData, error: profilesError } = await supabase
-          .from('profiles')
-          .select('*')
-          .in('id', Array.from(userIds));
-          
-        if (profilesError) throw profilesError;
-        
-        const messagesWithProfiles = chronMessages.map(m => {
-          const profile = profilesData?.find(p => p.id === m.user_id);
-          const replyToProfile = m.reply_to_message 
-            ? profilesData?.find(p => p.id === m.reply_to_message.user_id)
-            : null;
-            
-          return {
-            ...m,
-            profiles: profile,
-            reply_to_message: m.reply_to_message 
-              ? { ...m.reply_to_message, profiles: replyToProfile }
-              : null
-          };
-        });
-        
-        if (before) {
-          const container = messagesContainerRef.current;
-          const oldScrollHeight = container?.scrollHeight || 0;
-
-          setMessages(prev => [...messagesWithProfiles, ...prev]);
-          setHasMore(messagesData.length === MESSAGES_PER_PAGE);
-          
-          setTimeout(() => {
-            if (container) {
-              container.scrollTop = container.scrollHeight - oldScrollHeight;
-            }
-          }, 0);
-        } else {
-          // When polling, we only want to add NEW messages, not replace everything
-          if (isPolling) {
-            setMessages(prev => {
-              const existingIds = new Set(prev.map(m => m.id));
-              const newMessages = messagesWithProfiles.filter(m => !existingIds.has(m.id));
-              if (newMessages.length === 0) return prev;
-              return [...prev, ...newMessages].sort((a, b) => 
-                new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
-              );
-            });
-          } else {
-            setMessages(messagesWithProfiles);
-            setHasMore(messagesData.length === MESSAGES_PER_PAGE);
-            
-            setTimeout(() => {
-              if (messagesContainerRef.current) {
-                messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
-              }
-            }, 100);
-          }
-        }
-
-        markMessagesAsRead(roomId);
-      }
-    } catch (error: any) {
-      console.error('Error fetching messages:', error);
-      if (!isPolling) {
-        showToast(`Failed to load message history: ${error.message || 'Unknown error'}`, 'error');
-      }
-    } finally {
-      if (before) setIsLoadingMore(false);
-      if (isPolling) isFetchingRef.current = false;
-    }
-  };
-
-  const fetchMembers = async (roomId: string) => {
-    try {
-      const { data: memberData, error: memberError } = await supabase
-        .from('room_members')
-        .select('user_id')
-        .eq('room_id', roomId);
-      
-      if (memberError) throw memberError;
-      
-      if (memberData && memberData.length > 0) {
-        const userIds = memberData.map(m => m.user_id);
-        const { data: profileData, error: profileError } = await supabase
-          .from('profiles')
-          .select('*')
-          .in('id', userIds);
-        
-        if (profileError) throw profileError;
-        setMembers(profileData || []);
-      } else {
-        setMembers([]);
-      }
-    } catch (error: any) {
-      console.error('Error fetching members:', error);
-      showToast(`Failed to load room members: ${error.message || 'Unknown error'}`, 'error');
     }
   };
 
@@ -1932,6 +1974,9 @@ export const ChatDashboard = ({ user }: { user: any }) => {
 
   const startVideoRecording = async () => {
     try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('Media devices API not supported in this browser or context.');
+      }
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       setVideoStream(stream);
       setIsVideoRecording(true);
@@ -1956,7 +2001,11 @@ export const ChatDashboard = ({ user }: { user: any }) => {
       recorder.start();
     } catch (error: any) {
       console.error('Error starting video recording:', error);
-      showToast('Failed to access camera/microphone', 'error');
+      if (error.name === 'NotAllowedError' || error.message?.includes('Permission denied')) {
+        showToast('Camera/Microphone permission denied. Please allow access in your browser settings.', 'error');
+      } else {
+        showToast(error.message || 'Failed to access camera/microphone', 'error');
+      }
     }
   };
 
@@ -2016,6 +2065,9 @@ export const ChatDashboard = ({ user }: { user: any }) => {
   };
   const startRecording = async () => {
     try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('Media devices API not supported in this browser or context.');
+      }
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mediaRecorder = new MediaRecorder(stream);
       mediaRecorderRef.current = mediaRecorder;
@@ -2039,9 +2091,13 @@ export const ChatDashboard = ({ user }: { user: any }) => {
       recordingIntervalRef.current = setInterval(() => {
         setRecordingTime(prev => prev + 1);
       }, 1000);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error starting recording:', error);
-      showToast('Could not access microphone', 'error');
+      if (error.name === 'NotAllowedError' || error.message.includes('Permission denied')) {
+        showToast('Microphone permission denied. Please allow microphone access in your browser settings.', 'error');
+      } else {
+        showToast(error.message || 'Could not access microphone', 'error');
+      }
     }
   };
 
@@ -2081,6 +2137,9 @@ export const ChatDashboard = ({ user }: { user: any }) => {
 
   const startCallRecording = async () => {
     try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+        throw new Error('Screen recording API not supported in this browser or context.');
+      }
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: true,
         audio: true
@@ -2121,9 +2180,13 @@ export const ChatDashboard = ({ user }: { user: any }) => {
           mediaRecorder.stop();
         }
       };
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error starting screen recording:', err);
-      showToast('Failed to start recording. Please ensure you have granted permission.', 'error');
+      if (err.name === 'NotAllowedError' || err.message?.includes('Permission denied')) {
+        showToast('Screen recording permission denied. Please allow access.', 'error');
+      } else {
+        showToast(err.message || 'Failed to start recording.', 'error');
+      }
       setShowRecordConsent(false);
     }
   };
@@ -2156,26 +2219,28 @@ export const ChatDashboard = ({ user }: { user: any }) => {
       const query = searchQuery.toLowerCase();
       
       // Parse advanced search tokens
-      const fromMatches = [...query.matchAll(/from:(\w+)/g)];
-      const hasMatches = [...query.matchAll(/has:(link|file|image|audio)/g)];
+      const fromMatches = [...query.matchAll(/from:(@?[\w.-]+)/g)];
+      const hasMatches = [...query.matchAll(/has:(link|file|image|audio|video)/g)];
       const isMatches = [...query.matchAll(/is:(pinned|starred|bookmarked)/g)];
       
       // Remove tokens from text search
       const textQuery = query
-        .replace(/from:\w+/g, '')
-        .replace(/has:(link|file|image|audio)/g, '')
+        .replace(/from:@?[\w.-]+/g, '')
+        .replace(/has:(link|file|image|audio|video)/g, '')
         .replace(/is:(pinned|starred|bookmarked)/g, '')
         .trim();
 
       for (const match of fromMatches) {
-        matchesSearch = matchesSearch && m.profiles?.username?.toLowerCase().includes(match[1]);
+        const username = match[1].startsWith('@') ? match[1].substring(1) : match[1];
+        matchesSearch = matchesSearch && m.profiles?.username?.toLowerCase().includes(username);
       }
       for (const match of hasMatches) {
         const type = match[1];
         if (type === 'link') matchesSearch = matchesSearch && !!m.link_preview;
-        if (type === 'file') matchesSearch = matchesSearch && !!m.file_url;
+        if (type === 'file') matchesSearch = matchesSearch && !!m.file_url && !m.file_type?.startsWith('video/');
         if (type === 'image') matchesSearch = matchesSearch && !!m.image_url;
         if (type === 'audio') matchesSearch = matchesSearch && !!m.audio_url;
+        if (type === 'video') matchesSearch = matchesSearch && m.file_type?.startsWith('video/');
       }
       for (const match of isMatches) {
         const type = match[1];
@@ -2400,6 +2465,71 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     }
   };
 
+  const handleTranslateMessage = async (messageId: string, content: string) => {
+    if (!content.trim()) return;
+    setIsTranslating(messageId);
+    try {
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: `Translate the following message to English. If it's already in English, just return it as is. Message: "${content}"`,
+      });
+      
+      const translation = response.text?.trim();
+      if (translation) {
+        const { error } = await supabase
+          .from('messages')
+          .update({ translation })
+          .eq('id', messageId);
+        
+        if (error) throw error;
+        setMessages(prev => prev.map(m => m.id === messageId ? { ...m, translation } : m));
+      }
+    } catch (error) {
+      console.error('Translation error:', error);
+      showToast('Failed to translate message', 'error');
+    } finally {
+      setIsTranslating(null);
+    }
+  };
+
+  const handleViewOnce = async (messageId: string) => {
+    try {
+      const { error } = await supabase
+        .from('messages')
+        .update({ is_viewed: true })
+        .eq('id', messageId);
+      
+      if (error) throw error;
+      setMessages(prev => prev.map(m => m.id === messageId ? { ...m, is_viewed: true } : m));
+    } catch (error) {
+      console.error('Error viewing message:', error);
+    }
+  };
+
+  const handleCreateCommunity = async () => {
+    if (!communityName.trim() || !user) return;
+    try {
+      const { data, error } = await supabase
+        .from('rooms')
+        .insert([{ 
+          name: communityName, 
+          type: 'community', 
+          created_by: user.id 
+        }])
+        .select()
+        .single();
+      
+      if (error) throw error;
+      setRooms(prev => [data, ...prev]);
+      setShowCommunityModal(false);
+      setCommunityName('');
+      showToast('Community created!');
+    } catch (error) {
+      console.error('Error creating community:', error);
+      showToast('Failed to create community', 'error');
+    }
+  };
+
   const handleSlashCommand = (command: string) => {
     const cmd = command.toLowerCase().slice(1);
     switch (cmd) {
@@ -2460,11 +2590,23 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     }
   };
 
-  const handleSendMessage = async (content: string = newMessage, audioUrl?: string, imageUrl?: string, fileUrl?: string, fileName?: string, fileSize?: number, fileType?: string, threadId?: string) => {
-    console.log('handleSendMessage triggered', { content, audioUrl, imageUrl, fileUrl, threadId });
+  const handleSendMessage = async (
+    content: string = newMessage, 
+    audioUrl?: string, 
+    imageUrl?: string, 
+    fileUrl?: string, 
+    fileName?: string, 
+    fileSize?: number, 
+    fileType?: string, 
+    threadId?: string,
+    poll?: any,
+    scheduledAtTime?: string,
+    viewOnce?: boolean
+  ) => {
+    console.log('handleSendMessage triggered', { content, audioUrl, imageUrl, fileUrl, threadId, poll, scheduledAtTime, viewOnce });
     const textContent = typeof content === 'string' ? content : newMessage;
     
-    if (!textContent.trim() && !audioUrl && !imageUrl && !fileUrl) {
+    if (!textContent.trim() && !audioUrl && !imageUrl && !fileUrl && !poll) {
       console.log('Empty message, returning');
       return;
     }
@@ -2482,9 +2624,13 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     }
 
     const currentReplyTo = threadId ? { id: threadId } : replyingTo;
-    if (!audioUrl && !imageUrl && !fileUrl) {
+    const finalScheduledAt = scheduledAtTime || scheduledAt;
+    const finalViewOnce = viewOnce;
+
+    if (!audioUrl && !imageUrl && !fileUrl && !poll) {
       setNewMessage('');
       if (!threadId) setReplyingTo(null);
+      setScheduledAt(null);
     }
     
     try {
@@ -2503,7 +2649,10 @@ export const ChatDashboard = ({ user }: { user: any }) => {
           file_name: fileName,
           file_size: fileSize,
           file_type: threadId ? 'thread' : fileType,
-          reply_to_id: threadId || currentReplyTo?.id
+          reply_to_id: threadId || currentReplyTo?.id,
+          poll: poll,
+          scheduled_at: finalScheduledAt,
+          is_view_once: finalViewOnce
         }])
         .select()
         .single();
@@ -2533,7 +2682,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
     } catch (error: any) {
       console.error('Error sending message:', error);
       showToast(error.message || 'Failed to send message. Please check your connection.', 'error');
-      if (!audioUrl) setNewMessage(textContent);
+      if (!audioUrl && !poll) setNewMessage(textContent);
     }
   };
 
@@ -2639,10 +2788,10 @@ export const ChatDashboard = ({ user }: { user: any }) => {
             >
               <div className="p-6 flex items-center justify-between border-b border-slate-200 dark:border-white/5 bg-slate-50 dark:bg-slate-900/50">
                 <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center">
-                    <MessageSquare className="w-5 h-5 text-white" />
+                  <div className="w-8 h-8 flex items-center justify-center">
+                    <Logo className="w-8 h-8 text-indigo-600 dark:text-indigo-500" />
                   </div>
-                  <span className="font-bold text-lg tracking-tight text-slate-900 dark:text-white">ChitChat</span>
+                  <span className="font-bold text-lg tracking-tight text-slate-900 dark:text-white">Nex Chat</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <button
@@ -2659,69 +2808,6 @@ export const ChatDashboard = ({ user }: { user: any }) => {
               </div>
 
               <div className="flex-1 overflow-y-auto p-4 space-y-6">
-                {/* Stories Section */}
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between px-3">
-                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em]">Stories</span>
-                    <button 
-                      onClick={() => setShowCreateStoryModal(true)}
-                      className="p-1 text-indigo-400 hover:bg-indigo-500/10 rounded-md transition-all"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                  <div className="flex gap-3 overflow-x-auto pb-2 px-1 scrollbar-none">
-                    <button 
-                      onClick={() => setShowCreateStoryModal(true)}
-                      className="flex-shrink-0 flex flex-col items-center gap-1.5 group"
-                    >
-                      <div className="relative">
-                        <div className="w-14 h-14 rounded-full border-2 border-dashed border-slate-700 flex items-center justify-center group-hover:border-indigo-500 transition-colors">
-                          {profile?.avatar_url ? (
-                            <img src={profile.avatar_url} alt="" className="w-12 h-12 rounded-full object-cover" />
-                          ) : (
-                            <User className="w-6 h-6 text-slate-600" />
-                          )}
-                        </div>
-                        <div className="absolute bottom-0 right-0 bg-indigo-500 text-white rounded-full p-0.5 border-2 border-slate-900">
-                          <Plus className="w-3 h-3" />
-                        </div>
-                      </div>
-                      <span className="text-[10px] font-medium text-slate-500 group-hover:text-slate-300">Your Story</span>
-                    </button>
-                    {Array.from(new Set(stories.map(s => s.user_id))).map(userId => {
-                      const userStories = stories.filter(s => s.user_id === userId);
-                      const storyUser = userStories[0].profiles;
-                      const allViewed = userStories.every(s => s.views?.some(v => v.user_id === user.id));
-                      
-                      return (
-                        <button 
-                          key={userId}
-                          onClick={() => {
-                            setShowStoryModal(userStories[0]);
-                            handleViewStory(userStories[0].id);
-                          }}
-                          className="flex-shrink-0 flex flex-col items-center gap-1.5 group"
-                        >
-                          <div className={cn(
-                            "p-0.5 rounded-full border-2 transition-all group-hover:scale-105",
-                            allViewed ? "border-slate-700" : "border-indigo-500"
-                          )}>
-                            <div className="w-12 h-12 rounded-full bg-slate-800 flex items-center justify-center text-xs font-bold overflow-hidden border-2 border-slate-900">
-                              {storyUser?.avatar_url ? (
-                                <img src={storyUser.avatar_url} alt="" className="w-full h-full object-cover" />
-                              ) : storyUser?.username?.[0]?.toUpperCase() || '?'}
-                            </div>
-                          </div>
-                          <span className="text-[10px] font-medium text-slate-500 group-hover:text-slate-300 truncate w-14 text-center">
-                            {storyUser?.username || 'User'}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
                 {/* Quick Actions */}
                 <div className="grid grid-cols-2 gap-3">
                   <button 
@@ -2777,17 +2863,41 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                   </button>
                   <button 
                     onClick={() => {
-                      setShowMembers(!showMembers);
+                      if (showMembers && rightSidebarTab === 'members') {
+                        setShowMembers(false);
+                      } else {
+                        setShowMembers(true);
+                        setRightSidebarTab('members');
+                      }
                       setIsMobileMenuOpen(false);
                     }}
                     aria-label="Show members"
                     className={cn(
                       "w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all group",
-                      showMembers ? "bg-indigo-500/10 text-indigo-400" : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                      showMembers && rightSidebarTab === 'members' ? "bg-indigo-500/10 text-indigo-400" : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"
                     )}
                   >
                     <Users className="w-5 h-5" />
                     <span className="font-medium">Members</span>
+                  </button>
+                  <button 
+                    onClick={() => {
+                      if (showMembers && rightSidebarTab === 'media') {
+                        setShowMembers(false);
+                      } else {
+                        setShowMembers(true);
+                        setRightSidebarTab('media');
+                      }
+                      setIsMobileMenuOpen(false);
+                    }}
+                    aria-label="Show media"
+                    className={cn(
+                      "w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all group",
+                      showMembers && rightSidebarTab === 'media' ? "bg-indigo-500/10 text-indigo-400" : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                    )}
+                  >
+                    <ImageIcon className="w-5 h-5" />
+                    <span className="font-medium">Media</span>
                   </button>
                 </div>
 
@@ -2968,326 +3078,170 @@ export const ChatDashboard = ({ user }: { user: any }) => {
       </AnimatePresence>
 
       {/* Desktop Sidebar - Hidden on mobile */}
-      <aside className="hidden lg:flex w-16 bg-white/80 dark:bg-[#020617]/80 backdrop-blur-md border-r border-slate-200 dark:border-white/5 flex-col items-center py-4 gap-4 flex-shrink-0 transition-colors duration-300">
-        <div className="w-12 h-12 bg-indigo-600 rounded-2xl flex items-center justify-center text-white shadow-lg shadow-indigo-500/20 cursor-pointer hover:rounded-xl transition-all">
+      <aside className="hidden lg:flex w-16 bg-[#202c33] border-r border-white/5 flex-col items-center py-4 gap-4 flex-shrink-0 transition-colors duration-300">
+        <div className="w-12 h-12 flex items-center justify-center cursor-pointer hover:scale-105 transition-all">
+          <Logo className="w-10 h-10 text-whatsapp-green" />
+        </div>
+        <div className="w-8 h-[2px] bg-white/10 rounded-full" />
+        <div 
+          onClick={() => setActiveTab('chats')}
+          className={cn(
+            "w-12 h-12 rounded-xl flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 cursor-pointer transition-all",
+            activeTab === 'chats' && "bg-white/10 text-whatsapp-green"
+          )}
+          title="Chats"
+        >
           <MessageSquare className="w-6 h-6" />
         </div>
-        <div className="w-8 h-[2px] bg-slate-200 dark:bg-slate-800 rounded-full" />
         <div 
-          onClick={toggleTheme}
-          className="w-12 h-12 bg-slate-100 dark:bg-slate-800 rounded-3xl flex items-center justify-center text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer hover:rounded-xl transition-all"
-          title={theme === 'light' ? 'Switch to Dark Mode' : 'Switch to Light Mode'}
+          onClick={() => setActiveTab('status')}
+          className={cn(
+            "w-12 h-12 rounded-xl flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 cursor-pointer transition-all",
+            activeTab === 'status' && "bg-white/10 text-whatsapp-green"
+          )}
+          title="Status"
         >
-          {theme === 'light' ? <Moon className="w-6 h-6" /> : <Sun className="w-6 h-6" />}
+          <History className="w-6 h-6" />
         </div>
         <div 
-          onClick={() => setShowCreateModal(true)}
-          className="w-12 h-12 bg-slate-100 dark:bg-slate-800 rounded-3xl flex items-center justify-center text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-slate-200 dark:hover:bg-slate-700 cursor-pointer hover:rounded-xl transition-all"
+          onClick={() => setActiveTab('communities')}
+          className={cn(
+            "w-12 h-12 rounded-xl flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 cursor-pointer transition-all",
+            activeTab === 'communities' && "bg-white/10 text-whatsapp-green"
+          )}
+          title="Communities"
         >
-          <Plus className="w-6 h-6" />
+          <Users className="w-6 h-6" />
+        </div>
+        <div className="mt-auto flex flex-col items-center gap-4">
+          <div 
+            onClick={toggleTheme}
+            className="w-12 h-12 rounded-xl flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 cursor-pointer transition-all"
+            title={theme === 'light' ? 'Switch to Dark Mode' : 'Switch to Light Mode'}
+          >
+            {theme === 'light' ? <Moon className="w-6 h-6" /> : <Sun className="w-6 h-6" />}
+          </div>
+          <div 
+            onClick={() => setShowProfileModal(true)}
+            className="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center text-white font-bold overflow-hidden cursor-pointer border border-white/10"
+          >
+            {profile?.avatar_url ? (
+              <img src={profile.avatar_url} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+            ) : (
+              profile?.username?.[0]?.toUpperCase() || '?'
+            )}
+          </div>
         </div>
       </aside>
 
-      <aside className="hidden lg:flex w-64 bg-slate-50/80 dark:bg-[#0f172a]/80 backdrop-blur-md border-r border-slate-200 dark:border-white/5 flex-col flex-shrink-0 transition-colors duration-300">
-        <div className="p-6 flex items-center justify-between">
+      <aside className="hidden lg:flex w-[350px] bg-[#111b21] border-r border-white/5 flex-col flex-shrink-0 transition-colors duration-300">
+        <div className="p-4 flex items-center justify-between bg-[#202c33]">
+          <h1 className="text-xl font-bold text-white">Chats</h1>
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center">
-              <MessageSquare className="w-5 h-5 text-white" />
-            </div>
-            <span className="font-bold text-lg tracking-tight text-slate-900 dark:text-white">ChitChat</span>
+            <button 
+              onClick={() => setShowCreateModal(true)}
+              className="p-2 text-slate-400 hover:text-white hover:bg-white/10 rounded-full transition-all"
+            >
+              <Plus className="w-5 h-5" />
+            </button>
+            <button className="p-2 text-slate-400 hover:text-white hover:bg-white/10 rounded-full transition-all">
+              <MoreVertical className="w-5 h-5" />
+            </button>
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-3 space-y-6 py-4">
-          {/* Stories Section */}
-          <div className="space-y-4">
-            <div className="flex items-center justify-between px-3">
-              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em]">Stories</span>
-              <button 
-                onClick={() => setShowCreateStoryModal(true)}
-                className="p-1 text-indigo-400 hover:bg-indigo-500/10 rounded-md transition-all"
+        <div className="p-2">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+            <input
+              type="text"
+              placeholder="Search or start new chat"
+              className="w-full bg-[#202c33] border-none rounded-lg pl-10 pr-4 py-2 text-sm text-slate-200 focus:outline-none focus:ring-0 placeholder:text-slate-500"
+            />
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto">
+          <div className="flex items-center gap-2 px-4 py-2">
+            <button className="px-3 py-1 rounded-full bg-[#202c33] text-xs font-medium text-slate-400 hover:bg-white/10 transition-colors">All</button>
+            <button className="px-3 py-1 rounded-full bg-[#202c33] text-xs font-medium text-slate-400 hover:bg-white/10 transition-colors">Unread</button>
+            <button className="px-3 py-1 rounded-full bg-[#202c33] text-xs font-medium text-slate-400 hover:bg-white/10 transition-colors">Groups</button>
+          </div>
+
+          <div className="mt-2">
+            {groupRooms.map((room) => (
+              <button
+                key={room.id}
+                onClick={() => selectRoom(room)}
+                className={cn(
+                  "w-full flex items-center gap-3 px-4 py-3 hover:bg-[#202c33] transition-all group relative border-b border-white/5",
+                  activeRoom?.id === room.id && "bg-[#2a3942]"
+                )}
               >
-                <Plus className="w-3.5 h-3.5" />
+                <div className="w-12 h-12 rounded-full bg-slate-700 flex items-center justify-center text-white font-bold overflow-hidden flex-shrink-0">
+                  <Hash className="w-6 h-6 text-slate-400" />
+                </div>
+                <div className="flex-1 min-w-0 text-left">
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium text-slate-200 truncate">{room.name}</span>
+                    <span className="text-[10px] text-slate-500">
+                      {room.last_message_at ? format(new Date(room.last_message_at), 'HH:mm') : ''}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 truncate mt-0.5">
+                    {room.unread_count && room.unread_count > 0 ? (
+                      <span className="text-whatsapp-green font-medium">New messages</span>
+                    ) : 'Click to chat'}
+                  </p>
+                </div>
+                {room.unread_count && room.unread_count > 0 && (
+                  <div className="bg-whatsapp-green text-black text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center">
+                    {room.unread_count}
+                  </div>
+                )}
               </button>
-            </div>
-            <div className="flex gap-4 overflow-x-auto pb-2 px-1 scrollbar-none">
-              <button 
-                onClick={() => setShowCreateStoryModal(true)}
-                className="flex-shrink-0 flex flex-col items-center gap-2 group"
+            ))}
+
+            {directMessages.map((dm) => (
+              <button
+                key={dm.id}
+                onClick={() => selectRoom(dm)}
+                className={cn(
+                  "w-full flex items-center gap-3 px-4 py-3 hover:bg-[#202c33] transition-all group relative border-b border-white/5",
+                  activeRoom?.id === dm.id && "bg-[#2a3942]"
+                )}
               >
-                <div className="relative">
-                  <div className="w-14 h-14 rounded-full border-2 border-dashed border-slate-700 flex items-center justify-center group-hover:border-indigo-500 transition-colors">
-                    {profile?.avatar_url ? (
-                      <img src={profile.avatar_url} alt="" className="w-12 h-12 rounded-full object-cover" />
+                <div className="relative flex-shrink-0">
+                  <div className="w-12 h-12 rounded-full bg-slate-700 flex items-center justify-center text-white font-bold overflow-hidden">
+                    {dm.other_user_profile?.avatar_url ? (
+                      <img src={dm.other_user_profile.avatar_url} alt="" className="w-full h-full object-cover" />
                     ) : (
-                      <User className="w-7 h-7 text-slate-600" />
+                      dm.other_user_profile?.username?.[0]?.toUpperCase() || '?'
                     )}
                   </div>
-                  <div className="absolute bottom-0 right-0 bg-indigo-500 text-white rounded-full p-1 border-2 border-slate-900">
-                    <Plus className="w-2.5 h-2.5" />
-                  </div>
-                </div>
-                <span className="text-[10px] font-bold text-slate-500 group-hover:text-slate-300 uppercase tracking-wider">Your Story</span>
-              </button>
-              {Array.from(new Set(stories.map(s => s.user_id))).map(userId => {
-                const userStories = stories.filter(s => s.user_id === userId);
-                const storyUser = userStories[0].profiles;
-                const allViewed = userStories.every(s => s.views?.some(v => v.user_id === user.id));
-                
-                return (
-                  <button 
-                    key={userId}
-                    onClick={() => {
-                      setShowStoryModal(userStories[0]);
-                      handleViewStory(userStories[0].id);
-                    }}
-                    className="flex-shrink-0 flex flex-col items-center gap-2 group"
-                  >
-                    <div className={cn(
-                      "p-0.5 rounded-full border-2 transition-all group-hover:scale-105",
-                      allViewed ? "border-slate-700" : "border-indigo-500"
-                    )}>
-                      <div className="w-12 h-12 rounded-full bg-slate-800 flex items-center justify-center text-sm font-bold overflow-hidden border-2 border-slate-900">
-                        {storyUser?.avatar_url ? (
-                          <img src={storyUser.avatar_url} alt="" className="w-full h-full object-cover" />
-                        ) : storyUser?.username?.[0]?.toUpperCase() || '?'}
-                      </div>
-                    </div>
-                    <span className="text-[10px] font-bold text-slate-500 group-hover:text-slate-300 uppercase tracking-wider truncate w-16 text-center">
-                      {storyUser?.username || 'User'}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Navigation Section */}
-          <div className="space-y-1">
-            <div className="px-3 py-2">
-              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Navigation</span>
-            </div>
-            <div className="space-y-0.5">
-              <button 
-                onClick={() => setShowStarredOnly(!showStarredOnly)}
-                className={cn(
-                  "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all group relative",
-                  showStarredOnly 
-                    ? "bg-amber-500/10 text-amber-500" 
-                    : "text-slate-400 hover:bg-slate-800/50 hover:text-slate-200"
-                )}
-              >
-                <Star className={cn(
-                  "w-4 h-4 transition-colors",
-                  showStarredOnly ? "text-amber-500" : "text-slate-500 group-hover:text-slate-400"
-                )} />
-                <span className="font-medium">Starred</span>
-                {showStarredOnly && (
-                  <motion.div 
-                    layoutId="activeNavDesktop"
-                    className="absolute left-0 w-1 h-6 bg-amber-500 rounded-r-full"
-                  />
-                )}
-              </button>
-
-              <button 
-                onClick={() => setShowGlobalSearch(true)}
-                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all group relative text-slate-400 hover:bg-slate-800/50 hover:text-slate-200"
-              >
-                <Search className="w-4 h-4 text-slate-500 group-hover:text-slate-400 transition-colors" />
-                <span className="font-medium">Global Search</span>
-              </button>
-              <button 
-                onClick={() => setShowMembers(!showMembers)}
-                className={cn(
-                  "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all group relative",
-                  showMembers 
-                    ? "bg-indigo-500/10 text-indigo-400" 
-                    : "text-slate-400 hover:bg-slate-800/50 hover:text-slate-200"
-                )}
-              >
-                <Users className={cn(
-                  "w-4 h-4 transition-colors",
-                  showMembers ? "text-indigo-400" : "text-slate-500 group-hover:text-slate-400"
-                )} />
-                <span className="font-medium">Members</span>
-                {showMembers && (
-                  <motion.div 
-                    layoutId="activeNavDesktop"
-                    className="absolute left-0 w-1 h-6 bg-indigo-500 rounded-r-full"
-                  />
-                )}
-              </button>
-              <button 
-                onClick={() => setShowJoinModal(true)}
-                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-slate-400 hover:bg-slate-800/50 hover:text-slate-200 transition-all group"
-              >
-                <Search className="w-4 h-4 text-slate-500 group-hover:text-slate-400 transition-colors" />
-                <span className="font-medium">Join Room</span>
-              </button>
-              <button 
-                onClick={() => setShowWorkspaceSettingsModal(true)}
-                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-slate-400 hover:bg-slate-800/50 hover:text-slate-200 transition-all group"
-              >
-                <Palette className="w-4 h-4 text-slate-500 group-hover:text-slate-400 transition-colors" />
-                <span className="font-medium">Workspace</span>
-              </button>
-              <button className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-slate-400 hover:bg-slate-800/50 hover:text-slate-200 transition-all group">
-                <Settings className="w-4 h-4 text-slate-500 group-hover:text-slate-400 transition-colors" />
-                <span className="font-medium">Settings</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Sort Section */}
-          <div className="px-3 py-2 flex items-center justify-between">
-            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em]">Sort By</span>
-            <button 
-              onClick={() => setSortBy(prev => prev === 'newest' ? 'unread' : prev === 'unread' ? 'alpha' : 'newest')}
-              className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-slate-800/50 text-[10px] font-bold text-indigo-400 hover:bg-slate-800 transition-all border border-indigo-500/20"
-            >
-              <Filter className="w-3 h-3" />
-              <span className="uppercase">{sortBy === 'unread' ? 'Unread First' : sortBy === 'alpha' ? 'Alphabetical' : 'Newest First'}</span>
-            </button>
-          </div>
-
-          {/* Rooms Section */}
-          <div className="space-y-1">
-            <div className="px-3 py-2 flex items-center justify-between group">
-              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Rooms</span>
-              <button 
-                onClick={() => setShowCreateModal(true)}
-                className="p-1 text-slate-500 hover:text-indigo-400 hover:bg-indigo-500/10 rounded-md transition-all"
-              >
-                <Plus className="w-4 h-4" />
-              </button>
-            </div>
-            <div className="space-y-0.5">
-              {groupRooms.map((room) => (
-                <button
-                  key={room.id}
-                  onClick={() => selectRoom(room)}
-                  className={cn(
-                    "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all group relative",
-                    activeRoom?.id === room.id 
-                      ? "bg-indigo-500/10 text-indigo-400" 
-                      : "text-slate-400 hover:bg-slate-800/50 hover:text-slate-200"
-                  )}
-                >
-                  <Hash className={cn(
-                    "w-4 h-4 transition-colors",
-                    activeRoom?.id === room.id ? "text-indigo-400" : "text-slate-500 group-hover:text-slate-400"
+                  <div className={cn(
+                    "absolute bottom-0.5 right-0.5 w-3 h-3 rounded-full border-2 border-[#111b21]",
+                    onlineUsers.has(dm.other_user_profile?.id || '') ? "bg-emerald-500" : "bg-slate-500"
                   )} />
-                  <span className={cn(
-                    "font-medium truncate",
-                    room.unread_count && room.unread_count > 0 && "font-bold text-slate-200"
-                  )}>{room.name}</span>
-                  {room.unread_count && room.unread_count > 0 ? (
-                    <div className="ml-auto bg-indigo-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center shadow-lg shadow-indigo-500/20">
-                      {room.unread_count}
-                    </div>
-                  ) : activeRoom?.id === room.id && (
-                    <motion.div 
-                      layoutId="activeRoomDesktop"
-                      className="absolute left-0 w-1 h-6 bg-indigo-500 rounded-r-full"
-                    />
-                  )}
-                </button>
-              ))}
-              {groupRooms.length === 0 && !loading && (
-                <div className="px-3 py-8 text-center space-y-3">
-                  <p className="text-sm text-slate-500">No rooms yet</p>
-                  <Button variant="outline" size="sm" onClick={() => setShowCreateModal(true)}>Create One</Button>
                 </div>
-              )}
-            </div>
-          </div>
-
-          {/* Direct Messages Section */}
-          <div className="space-y-1">
-            <div className="px-3 py-2 flex items-center justify-between group">
-              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Direct Messages</span>
-              <button 
-                onClick={() => setShowNewDMModal(true)}
-                className="p-1 text-slate-500 hover:text-indigo-400 hover:bg-indigo-500/10 rounded-md transition-all"
-              >
-                <Plus className="w-4 h-4" />
-              </button>
-            </div>
-            <div className="space-y-0.5">
-              {directMessages.map((dm) => (
-                <button
-                  key={dm.id}
-                  onClick={() => selectRoom(dm)}
-                  className={cn(
-                    "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all group relative",
-                    activeRoom?.id === dm.id 
-                      ? "bg-indigo-500/10 text-indigo-400" 
-                      : "text-slate-400 hover:bg-slate-800/50 hover:text-slate-200"
-                  )}
-                >
-                  <div className="relative">
-                    <div className="w-5 h-5 rounded-lg bg-slate-800 flex items-center justify-center text-[10px] font-bold overflow-hidden">
-                      {dm.other_user_profile?.avatar_url ? (
-                        <img src={dm.other_user_profile.avatar_url} alt="" className="w-full h-full object-cover" />
-                      ) : (
-                        dm.other_user_profile?.username?.[0]?.toUpperCase() || '?'
-                      )}
-                    </div>
-                    <div className={cn(
-                      "absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full border border-slate-900",
-                      onlineUsers.has(dm.other_user_profile?.id || '') ? "bg-emerald-500" : "bg-slate-500"
-                    )} />
+                <div className="flex-1 min-w-0 text-left">
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium text-slate-200 truncate">{dm.other_user_profile?.username || 'Unknown'}</span>
+                    <span className="text-[10px] text-slate-500">
+                      {dm.last_message_at ? format(new Date(dm.last_message_at), 'HH:mm') : ''}
+                    </span>
                   </div>
-                  <span className={cn(
-                    "font-medium truncate",
-                    dm.unread_count && dm.unread_count > 0 && "font-bold text-slate-200"
-                  )}>{dm.other_user_profile?.username || 'Unknown'}</span>
-                  {dm.unread_count && dm.unread_count > 0 ? (
-                    <div className="ml-auto bg-indigo-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center shadow-lg shadow-indigo-500/20">
-                      {dm.unread_count}
-                    </div>
-                  ) : activeRoom?.id === dm.id && (
-                    <motion.div 
-                      layoutId="activeRoomDesktop"
-                      className="absolute left-0 w-1 h-6 bg-indigo-500 rounded-r-full"
-                    />
-                  )}
-                </button>
-              ))}
-              {directMessages.length === 0 && !loading && (
-                <div className="px-3 py-4 text-center">
-                  <p className="text-xs text-slate-500">No direct messages</p>
+                  <p className="text-xs text-slate-500 truncate mt-0.5">
+                    {dm.other_user_profile?.status || 'Hey there! I am using Nex Chat.'}
+                  </p>
                 </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* User Profile Section */}
-        <div className="p-4 bg-slate-100 dark:bg-slate-900/50 border-t border-slate-200 dark:border-white/5 transition-colors duration-300">
-          <div className="flex items-center gap-3 px-2">
-            <button 
-              onClick={() => setShowProfileModal(true)}
-              className="w-10 h-10 rounded-xl bg-indigo-500/20 flex items-center justify-center text-indigo-400 font-bold border border-indigo-500/20 hover:bg-indigo-500/30 transition-all overflow-hidden"
-            >
-              {profile?.avatar_url ? (
-                <img src={profile.avatar_url} alt="Avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-              ) : (
-                profile?.username?.[0]?.toUpperCase() || user.email[0].toUpperCase()
-              )}
-            </button>
-            <div className="flex-1 min-w-0 cursor-pointer" onClick={() => setShowProfileModal(true)}>
-              <p className="text-sm font-semibold text-slate-900 dark:text-slate-200 truncate">{profile?.username || 'User'}</p>
-              <p className="text-xs text-slate-500 truncate">{user.email}</p>
-            </div>
-            <button 
-              onClick={handleLogout}
-              className="p-2 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-xl transition-all"
-              title="Logout"
-            >
-              <LogOut className="w-4 h-4" />
-            </button>
+                {dm.unread_count && dm.unread_count > 0 && (
+                  <div className="bg-whatsapp-green text-black text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center">
+                    {dm.unread_count}
+                  </div>
+                )}
+              </button>
+            ))}
           </div>
         </div>
       </aside>
@@ -3295,71 +3249,108 @@ export const ChatDashboard = ({ user }: { user: any }) => {
       {/* Main Chat Area */}
       <main 
         className={cn(
-          "flex-1 flex flex-col w-full min-w-0 relative transition-colors duration-300 overflow-hidden",
-          !chatWallpaper && chatTheme === 'default' && "bg-white dark:bg-[#020617]",
-          !chatWallpaper && chatTheme === 'minimalist' && "bg-slate-50 dark:bg-black",
-          !chatWallpaper && chatTheme === 'dark-blue' && "bg-blue-50 dark:bg-blue-950",
-          !chatWallpaper && chatTheme === 'forest' && "bg-emerald-50 dark:bg-emerald-950"
+          "flex-1 flex flex-col w-full min-w-0 relative transition-colors duration-300 overflow-hidden bg-whatsapp-bg"
         )}
-        style={{
-          backgroundImage: chatWallpaper ? `url(${chatWallpaper})` : undefined,
-          backgroundSize: 'cover',
-          backgroundPosition: 'center',
-          backgroundAttachment: 'fixed'
-        }}
       >
-        {chatWallpaper && (
-          <div className="absolute inset-0 bg-white/20 dark:bg-black/40 pointer-events-none z-0" />
+        <div className="whatsapp-doodle" />
+        
+        {/* Desktop Header */}
+        {activeRoom && (
+          <header className="hidden lg:flex h-16 px-4 items-center justify-between bg-whatsapp-header border-b border-white/5 z-10">
+            <div className="flex items-center gap-3 cursor-pointer">
+              <div className="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center text-white font-bold overflow-hidden">
+                {activeRoom.is_direct ? (
+                  activeRoom.other_user_profile?.avatar_url ? (
+                    <img src={activeRoom.other_user_profile.avatar_url} alt="" className="w-full h-full object-cover" />
+                  ) : (
+                    activeRoom.other_user_profile?.username?.[0]?.toUpperCase() || '?'
+                  )
+                ) : (
+                  <Hash className="w-5 h-5 text-slate-400" />
+                )}
+              </div>
+              <div className="flex flex-col">
+                <h2 className="font-medium text-white text-sm leading-tight">
+                  {activeRoom.is_direct ? activeRoom.other_user_profile?.username : activeRoom.name}
+                </h2>
+                <p className="text-xs text-slate-400">
+                  {activeRoom.is_direct ? (
+                    onlineUsers.has(activeRoom.other_user_profile?.id || '') ? 'online' : 'offline'
+                  ) : (
+                    `${members.length} members`
+                  )}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-4">
+              {!activeCallUrl && (
+                <button 
+                  onClick={() => setActiveCallUrl(`NexChat-${activeRoom.id}`)}
+                  className="p-2 text-slate-400 hover:text-white transition-colors"
+                  title="Start Video Call"
+                >
+                  <Video className="w-5 h-5" />
+                </button>
+              )}
+              <button className="p-2 text-slate-400 hover:text-white transition-colors">
+                <Volume2 className="w-5 h-5" />
+              </button>
+              <div className="w-[1px] h-6 bg-white/10 mx-1" />
+              <button className="p-2 text-slate-400 hover:text-white transition-colors">
+                <Search className="w-5 h-5" />
+              </button>
+              <button className="p-2 text-slate-400 hover:text-white transition-colors">
+                <MoreVertical className="w-5 h-5" />
+              </button>
+            </div>
+          </header>
         )}
         {/* Mobile Global Header - Always visible on mobile */}
-        <header className="lg:hidden h-16 px-4 border-b border-slate-200 dark:border-white/5 flex items-center justify-between bg-white/50 dark:bg-[#020617]/50 backdrop-blur-md z-30 sticky top-0 transition-colors duration-300">
+        <header className="lg:hidden h-16 px-4 border-b border-white/5 flex items-center justify-between bg-whatsapp-header z-30 sticky top-0 transition-colors duration-300">
           <div className="flex items-center gap-3 min-w-0">
             <button 
               onClick={() => setIsMobileMenuOpen(true)}
-              className="p-2 -ml-2 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition-all"
+              className="p-2 -ml-2 text-slate-400 hover:text-white hover:bg-white/10 rounded-xl transition-all"
             >
               <Menu className="w-6 h-6" />
             </button>
             {activeRoom ? (
               <div className="min-w-0">
-                <h2 className="font-bold text-slate-900 dark:text-white truncate text-sm">{activeRoom.name}</h2>
+                <h2 className="font-bold text-white truncate text-sm">{activeRoom.name}</h2>
                 <div className="flex items-center gap-2">
-                  <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800/50 px-2 py-0.5 rounded-lg border border-slate-200 dark:border-white/5">
-                    <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate font-medium">Code: <span className="font-mono text-indigo-400">{activeRoom.code}</span></p>
-                    <button 
-                      onClick={() => copyToClipboard(activeRoom.code)}
-                      className="p-0.5 text-slate-500 hover:text-indigo-400 transition-colors"
-                      title="Copy Room Code"
-                    >
-                      {copied ? <Check className="w-2.5 h-2.5 text-emerald-400" /> : <Copy className="w-2.5 h-2.5" />}
-                    </button>
-                  </div>
+                  <p className="text-[10px] text-slate-400 truncate font-medium">Code: <span className="font-mono text-whatsapp-green">{activeRoom.code}</span></p>
                   <button 
-                    onClick={() => {
-                      const shareText = `Join my room "${activeRoom.name}" on ChitChat! Code: ${activeRoom.code}`;
-                      navigator.clipboard.writeText(shareText);
-                      setCopied(true);
-                      showToast('Share message copied!');
-                      setTimeout(() => setCopied(false), 2000);
-                    }}
-                    className="p-1 text-slate-500 hover:text-indigo-400 transition-colors"
+                    onClick={() => copyToClipboard(activeRoom.code)}
+                    className="p-0.5 text-slate-400 hover:text-whatsapp-green transition-colors"
+                    title="Copy Room Code"
                   >
-                    <span className="text-[8px] font-bold uppercase tracking-wider text-slate-600">Share</span>
+                    {copied ? <Check className="w-2.5 h-2.5 text-emerald-400" /> : <Copy className="w-2.5 h-2.5" />}
                   </button>
                 </div>
               </div>
             ) : (
               <div className="flex items-center gap-2">
-                <div className="w-7 h-7 bg-indigo-600 rounded-lg flex items-center justify-center">
-                  <MessageSquare className="w-4 h-4 text-white" />
+                <div className="w-7 h-7 flex items-center justify-center">
+                  <Logo className="w-7 h-7 text-whatsapp-green" />
                 </div>
-                <span className="font-bold text-slate-900 dark:text-slate-200 tracking-tight">ChitChat</span>
+                <span className="font-bold text-white tracking-tight">Nex Chat</span>
               </div>
             )}
           </div>
           
           {activeRoom && (
             <div className="flex items-center gap-1">
+              {!activeCallUrl && (
+                <Button 
+                  variant="ghost" 
+                  size="icon" 
+                  onClick={() => setActiveCallUrl(`NexChat-${activeRoom.id}`)}
+                  className="text-slate-400 hover:text-white"
+                  title="Start Video Call"
+                >
+                  <Video className="w-5 h-5" />
+                </Button>
+              )}
               <Button 
                 variant="ghost" 
                 size="icon" 
@@ -3369,23 +3360,11 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                   if (showSearch) setSearchQuery('');
                 }}
                 className={cn(
-                  "text-slate-500 dark:text-slate-400",
-                  showSearch ? 'text-indigo-400 bg-indigo-500/10' : ''
+                  "text-slate-400",
+                  showSearch ? 'text-whatsapp-green bg-white/10' : ''
                 )}
               >
                 <Search className="w-5 h-5" />
-              </Button>
-              <Button 
-                variant="ghost" 
-                size="icon" 
-                aria-label="Show members"
-                onClick={() => setShowMembers(!showMembers)}
-                className={cn(
-                  "text-slate-500 dark:text-slate-400",
-                  showMembers ? 'text-indigo-400 bg-indigo-500/10' : ''
-                )}
-              >
-                <User className="w-5 h-5" />
               </Button>
               <div className="relative">
                 <Button 
@@ -3393,7 +3372,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                   size="icon" 
                   aria-label="Show room menu"
                   onClick={() => setShowMobileRoomMenu(!showMobileRoomMenu)}
-                  className="text-slate-500 dark:text-slate-400"
+                  className="text-slate-400"
                 >
                   <MoreVertical className="w-5 h-5" />
                 </Button>
@@ -3424,13 +3403,33 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                         </button>
                         <button
                           onClick={() => {
-                            setShowMembers(!showMembers);
+                            if (showMembers && rightSidebarTab === 'members') {
+                              setShowMembers(false);
+                            } else {
+                              setShowMembers(true);
+                              setRightSidebarTab('members');
+                            }
                             setShowMobileRoomMenu(false);
                           }}
                           className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
                         >
                           <User className="w-4 h-4" />
-                          {showMembers ? 'Hide Members' : 'Show Members'}
+                          {showMembers && rightSidebarTab === 'members' ? 'Hide Members' : 'Show Members'}
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (showMembers && rightSidebarTab === 'media') {
+                              setShowMembers(false);
+                            } else {
+                              setShowMembers(true);
+                              setRightSidebarTab('media');
+                            }
+                            setShowMobileRoomMenu(false);
+                          }}
+                          className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                        >
+                          <ImageIcon className="w-4 h-4" />
+                          {showMembers && rightSidebarTab === 'media' ? 'Hide Media' : 'Show Media'}
                         </button>
                         <button
                           onClick={() => {
@@ -3482,8 +3481,9 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                       type="text"
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      placeholder="Search messages..."
+                      placeholder="Search (e.g. from:@user, has:image, is:pinned)..."
                       aria-label="Search messages"
+                      title="Advanced filters: from:@username, has:link|file|image|audio|video, is:pinned|starred|bookmarked"
                       className="w-full bg-slate-100 dark:bg-slate-900/50 border border-slate-200 dark:border-white/5 rounded-xl pl-10 pr-10 py-2 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500/50 placeholder:text-slate-400 dark:placeholder:text-slate-600 transition-colors duration-300"
                     />
                     {searchQuery && (
@@ -3547,7 +3547,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                       </div>
                       <button 
                         onClick={() => {
-                          const shareText = `Join my room "${activeRoom.name}" on ChitChat! Code: ${activeRoom.code}`;
+                          const shareText = `Join my room "${activeRoom.name}" on Nex Chat! Code: ${activeRoom.code}`;
                           navigator.clipboard.writeText(shareText);
                           setCopied(true);
                           showToast('Share message copied!');
@@ -3573,7 +3573,8 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                         type="text"
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
-                        placeholder="Search messages..."
+                        placeholder="Search (e.g. from:@user, has:image, is:pinned)..."
+                        title="Advanced filters: from:@username, has:link|file|image|audio|video, is:pinned|starred|bookmarked"
                         className="w-full bg-white dark:bg-slate-900/50 border border-slate-200 dark:border-white/5 rounded-xl pl-9 pr-4 py-1.5 text-xs text-slate-900 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500/50 placeholder:text-slate-400 dark:placeholder:text-slate-600"
                       />
                       {searchQuery && (
@@ -3602,12 +3603,36 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                   <Button 
                     variant="ghost" 
                     size="icon" 
-                    onClick={() => setShowMembers(!showMembers)}
+                    onClick={() => {
+                      if (showMembers && rightSidebarTab === 'members') {
+                        setShowMembers(false);
+                      } else {
+                        setShowMembers(true);
+                        setRightSidebarTab('members');
+                      }
+                    }}
                     className={cn(
-                      showMembers ? 'text-indigo-400 bg-indigo-500/10' : ''
+                      showMembers && rightSidebarTab === 'members' ? 'text-indigo-400 bg-indigo-500/10' : ''
                     )}
                   >
                     <User className="w-5 h-5" />
+                  </Button>
+                  <Button 
+                    variant="ghost" 
+                    size="icon" 
+                    onClick={() => {
+                      if (showMembers && rightSidebarTab === 'media') {
+                        setShowMembers(false);
+                      } else {
+                        setShowMembers(true);
+                        setRightSidebarTab('media');
+                      }
+                    }}
+                    className={cn(
+                      showMembers && rightSidebarTab === 'media' ? 'text-indigo-400 bg-indigo-500/10' : ''
+                    )}
+                  >
+                    <ImageIcon className="w-5 h-5" />
                   </Button>
                   <Button 
                     variant="ghost" 
@@ -3621,29 +3646,18 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                   >
                     {mutedRooms.has(activeRoom.id) ? <BellOff className="w-5 h-5" /> : <Bell className="w-5 h-5" />}
                   </Button>
-                  <Button 
-                    variant="ghost" 
-                    size="icon" 
-                    onClick={() => setActiveCallUrl('https://your-daily-room-url.daily.co/test')}
-                    title="Start Video Call"
-                  >
-                    <Video className="w-5 h-5" />
-                  </Button>
-
-                  {activeRoom.is_direct && (
+                  {!activeCallUrl && (
                     <Button 
                       variant="ghost" 
-                      size="icon" 
-                      onClick={toggleVanishMode}
-                      className={cn(
-                        "transition-colors",
-                        activeRoom.vanish_mode ? "text-indigo-400 bg-indigo-500/10 hover:bg-indigo-500/20" : "text-slate-500 dark:text-slate-400"
-                      )}
-                      title="Vanish Mode"
+                      onClick={() => setActiveCallUrl(`NexChat-${activeRoom.id}`)}
+                      className="gap-2"
+                      title="Start Video Call"
                     >
-                      <EyeOff className="w-5 h-5" />
+                      <Video className="w-5 h-5" />
+                      <span className="hidden sm:inline">Start Video Call</span>
                     </Button>
                   )}
+
                   <Button 
                     variant="ghost" 
                     size="icon" 
@@ -3723,6 +3737,14 @@ export const ChatDashboard = ({ user }: { user: any }) => {
               onScroll={handleScroll}
               className="flex-1 overflow-y-auto p-6 space-y-1 scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800 relative z-10"
             >
+              {/* Encryption Notice */}
+              <div className="flex justify-center my-6">
+                <div className="bg-whatsapp-encryption-bg text-whatsapp-encryption-text px-4 py-2 rounded-lg text-[11px] text-center max-w-sm flex items-center gap-2 shadow-sm border border-white/5">
+                  <Lock className="w-3 h-3 flex-shrink-0" />
+                  <span>Messages are end-to-end encrypted. No one outside of this chat, not even Nex Chat, can read or listen to them. Click to learn more.</span>
+                </div>
+              </div>
+
               {isLoadingMore && (
                 <div className="flex justify-center py-4">
                   <div className="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
@@ -3849,11 +3871,11 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                             msg.is_starred && "ring-2 ring-amber-400/50 bg-amber-50/50 dark:bg-amber-900/10",
                             isMe 
                               ? cn(
-                                  "bg-indigo-600 text-white",
+                                  "bg-[#005c4b] text-white",
                                   shouldGroup ? "rounded-tr-2xl" : "rounded-tr-none"
                                 )
                               : cn(
-                                  "bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700/50",
+                                  "bg-[#202c33] text-slate-200 border border-white/5",
                                   shouldGroup ? "rounded-tl-2xl" : "rounded-tl-none"
                                 )
                           )}>
@@ -3879,12 +3901,76 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                               </div>
                             )}
 
+                            {msg.poll && (
+                              <div className="mt-2 p-3 bg-white/10 dark:bg-white/5 rounded-xl border border-white/10 space-y-3 min-w-[240px]">
+                                <h4 className="font-bold text-sm">{msg.poll.question}</h4>
+                                <div className="space-y-2">
+                                  {msg.poll.options.map((option) => {
+                                    const totalVotes = msg.poll?.options.reduce((acc, opt) => acc + opt.votes.length, 0) || 0;
+                                    const percentage = totalVotes > 0 ? Math.round((option.votes.length / totalVotes) * 100) : 0;
+                                    const hasVoted = option.votes.includes(user.id);
+
+                                    return (
+                                      <button
+                                        key={option.id}
+                                        onClick={() => handleVotePoll(msg.id, option.id)}
+                                        className={cn(
+                                          "w-full text-left p-2 rounded-lg border transition-all relative overflow-hidden group/poll",
+                                          hasVoted 
+                                            ? "bg-indigo-500/20 border-indigo-500/40" 
+                                            : "bg-white/5 border-white/10 hover:bg-white/10"
+                                        )}
+                                      >
+                                        <div 
+                                          className="absolute inset-y-0 left-0 bg-indigo-500/20 transition-all duration-500" 
+                                          style={{ width: `${percentage}%` }}
+                                        />
+                                        <div className="relative flex justify-between items-center text-xs">
+                                          <span className="font-medium">{option.text}</span>
+                                          <span className="opacity-60 font-bold">{percentage}%</span>
+                                        </div>
+                                        {hasVoted && (
+                                          <div className="absolute right-2 top-1/2 -translate-y-1/2">
+                                            <Check className="w-3 h-3 text-indigo-400" />
+                                          </div>
+                                        )}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                                <div className="flex justify-between items-center text-[10px] opacity-60 font-medium">
+                                  <span>{msg.poll.options.reduce((acc, opt) => acc + opt.votes.length, 0)} votes</span>
+                                  {msg.poll.is_multiple_choice && <span>Multiple choice</span>}
+                                </div>
+                              </div>
+                            )}
+
                             {msg.audio_url ? (
-                              <AudioPlayer 
-                                isPlaying={playingAudioId === msg.id}
-                                onToggle={() => toggleAudio(msg.id, msg.audio_url!)}
-                                isMe={isMe}
-                              />
+                              <div className="space-y-2">
+                                <AudioPlayer 
+                                  isPlaying={playingAudioId === msg.id}
+                                  onToggle={() => toggleAudio(msg.id, msg.audio_url!)}
+                                  isMe={isMe}
+                                />
+                                {!msg.transcription ? (
+                                  <button
+                                    onClick={() => transcribeAudio(msg.id, msg.audio_url!)}
+                                    disabled={isTranscribing === msg.id}
+                                    className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-indigo-400 hover:text-indigo-300 disabled:opacity-50"
+                                  >
+                                    {isTranscribing === msg.id ? (
+                                      <div className="w-3 h-3 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
+                                    ) : (
+                                      <Mic className="w-3 h-3" />
+                                    )}
+                                    {isTranscribing === msg.id ? 'Transcribing...' : 'Transcribe'}
+                                  </button>
+                                ) : (
+                                  <div className="p-2 bg-black/10 rounded-lg text-xs italic opacity-80 border-l-2 border-indigo-500">
+                                    "{msg.transcription}"
+                                  </div>
+                                )}
+                              </div>
                             ) : editingMessageId === msg.id ? (
                               <div className="flex flex-col gap-2 min-w-[240px] p-2 bg-indigo-500/5 rounded-xl border border-indigo-500/20">
                                 <div className="flex items-center justify-between mb-1">
@@ -3952,12 +4038,33 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                               </div>
                             ) : (
                               <div className="flex flex-col gap-2">
-                                {msg.is_forwarded && (
-                                  <div className="flex items-center gap-1.5 mb-1 opacity-60 italic">
-                                    <Forward className="w-3 h-3" />
-                                    <span className="text-[10px] font-medium">Forwarded</span>
+                                {msg.is_view_once && msg.is_viewed ? (
+                                  <div className="flex items-center gap-2 p-2 bg-slate-800/30 rounded-lg border border-white/5 italic text-[10px] opacity-60">
+                                    <EyeOff className="w-3 h-3" />
+                                    <span>Opened view-once message</span>
                                   </div>
-                                )}
+                                ) : (
+                                  <>
+                                    {msg.is_view_once && (
+                                      <button 
+                                        onClick={() => handleViewOnce(msg.id)}
+                                        className="flex items-center gap-2 p-2 bg-indigo-500/20 hover:bg-indigo-500/30 rounded-lg border border-indigo-500/30 transition-all w-full text-left"
+                                      >
+                                        <Eye className="w-4 h-4 text-indigo-400" />
+                                        <div className="flex flex-col">
+                                          <span className="text-[10px] font-bold text-indigo-300">View Once</span>
+                                          <span className="text-[8px] text-indigo-300/70">Tap to reveal</span>
+                                        </div>
+                                      </button>
+                                    )}
+                                    {(!msg.is_view_once || !msg.is_viewed) && (
+                                      <div className={cn(msg.is_view_once && "hidden")}>
+                                        {msg.is_forwarded && (
+                                          <div className="flex items-center gap-1.5 mb-1 opacity-60 italic">
+                                            <Forward className="w-3 h-3" />
+                                            <span className="text-[10px] font-medium">Forwarded</span>
+                                          </div>
+                                        )}
                                 {msg.is_pinned && (
                                   <div className="flex items-center gap-1.5 mb-1 opacity-70">
                                     <Pin className="w-3 h-3 text-amber-400 fill-amber-400" />
@@ -4010,33 +4117,6 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                                   </div>
                                 )}
                                 
-                                {/* Reactions Display */}
-                                {msg.reactions && msg.reactions.length > 0 && (
-                                  <div className={cn("flex flex-wrap gap-1 mt-1", isMe ? "justify-end" : "justify-start")}>
-                                    {Object.entries(msg.reactions.reduce((acc: Record<string, string[]>, r) => {
-                                      if (!acc[r.emoji]) acc[r.emoji] = [];
-                                      acc[r.emoji].push(r.id);
-                                      return acc;
-                                    }, {})).map(([emoji, ids]) => (
-                                      <motion.button
-                                        key={emoji}
-                                        whileHover={{ scale: 1.05 }}
-                                        whileTap={{ scale: 0.95 }}
-                                        onClick={() => handleToggleReaction(msg.id, emoji)}
-                                        className={cn(
-                                          "flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium transition-all border",
-                                          msg.reactions?.some(r => r.emoji === emoji && r.user_id === user.id)
-                                            ? "bg-indigo-50 border-indigo-200 text-indigo-700 dark:bg-indigo-900/30 dark:border-indigo-800 dark:text-indigo-300"
-                                            : "bg-white border-slate-200 text-slate-700 hover:border-slate-300 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-300 dark:hover:border-slate-600"
-                                        )}
-                                      >
-                                        <span className="text-sm">{emoji}</span>
-                                        <span className="font-semibold">{ids.length}</span>
-                                      </motion.button>
-                                    ))}
-                                  </div>
-                                )}
-                                
                                 {msg.link_preview && (
                                   <LinkPreview preview={msg.link_preview} />
                                 )}
@@ -4076,11 +4156,15 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                                 })()}
                               </div>
                             )}
+                          </>
+                        )}
+                      </div>
+                    )}
                             
                             {/* Message Footer (Time & Read Receipts) */}
                             <div className={cn(
                               "flex items-center gap-1 mt-1 text-[10px]",
-                              isMe ? "justify-end text-indigo-200" : "justify-end text-slate-400 dark:text-slate-500",
+                              isMe ? "justify-end text-white/60" : "justify-end text-slate-400",
                               shouldGroup ? "opacity-0 group-hover/bubble:opacity-100 transition-opacity" : "opacity-100"
                             )}>
                               {msg.updated_at && (
@@ -4124,6 +4208,17 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                             "absolute top-0 opacity-0 group-hover/bubble:opacity-100 transition-opacity z-10 flex gap-1 select-none",
                             isMe ? "right-full mr-2" : "left-full ml-2"
                           )}>
+                            {msg.content && (
+                              <motion.button
+                                initial={{ opacity: 0, scale: 0.5 }}
+                                animate={{ opacity: 1, scale: 1 }}
+                                onClick={() => handleTranslateMessage(msg.id, msg.content)}
+                                className="p-1.5 text-slate-500 hover:text-indigo-400 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition-all hover:scale-110 active:scale-95 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm border border-slate-200 dark:border-slate-800"
+                                title="Translate"
+                              >
+                                <Languages className="w-4 h-4" />
+                              </motion.button>
+                            )}
                             <motion.button
                               initial={{ opacity: 0, scale: 0.5 }}
                               animate={{ opacity: 1, scale: 1 }}
@@ -4338,406 +4433,205 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                   </motion.div>
                 )}
               </AnimatePresence>
-
               <div ref={messagesEndRef} />
             </div>
 
-            {/* Input Bar */}
-            <div className={cn(
-              "p-6 relative z-10",
-              chatWallpaper && "bg-white/50 dark:bg-black/50 backdrop-blur-md border-t border-slate-200/50 dark:border-white/10"
-            )}>
-              <div className="relative">
-                {/* Typing Indicator */}
-                <AnimatePresence>
-                  {typingUsers.size > 0 && (
-                    <motion.div
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: 10 }}
-                      className="absolute -top-6 left-2 flex items-center gap-2"
-                    >
-                      <div className="flex gap-1">
-                        <span className="w-1 h-1 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                        <span className="w-1 h-1 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                        <span className="w-1 h-1 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-                      </div>
-                      <span className="text-[10px] font-medium text-slate-500 italic">
-                        {Array.from(typingUsers).join(', ')} {typingUsers.size === 1 ? 'is' : 'are'} typing...
-                      </span>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-
-                <AnimatePresence>
-                  {isRecording && (
-                    <motion.div
-                      initial={{ opacity: 0, y: 20 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: 20 }}
-                      className="absolute inset-0 z-10 bg-white dark:bg-[#0f172a] border border-indigo-500/30 rounded-2xl px-6 flex items-center justify-between shadow-2xl shadow-indigo-500/10"
-                    >
-                      <div className="flex items-center gap-4">
-                        <div className="flex items-center gap-2">
-                          <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-                          <span className="text-sm font-mono text-slate-600 dark:text-slate-300">{formatDuration(recordingDuration)}</span>
-                        </div>
-                        <span className="text-xs text-slate-400 dark:text-slate-500 uppercase tracking-widest font-bold">Recording...</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <button 
-                          type="button"
-                          onClick={cancelRecording}
-                          className="p-2 text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded-xl transition-all"
-                          title="Cancel Recording"
-                        >
-                          <Trash2 className="w-5 h-5" />
-                        </button>
-                        <button 
-                          type="button"
-                          onClick={stopRecording}
-                          className="p-2 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-500/20"
-                          title="Stop and Send"
-                        >
-                          <Square className="w-5 h-5 fill-current" />
-                        </button>
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-
-                <AnimatePresence>
-                  {replyingTo && (
-                    <motion.div
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: 10 }}
-                      className="absolute bottom-full left-0 right-0 mb-2 p-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-xl flex items-center justify-between z-20"
-                    >
-                      <div className="flex items-center gap-3 overflow-hidden">
-                        <div className="w-1 h-8 bg-indigo-500 rounded-full flex-shrink-0" />
-                        <div className="min-w-0">
-                          <p className="text-[10px] font-bold text-indigo-400 uppercase tracking-wider">Replying to {replyingTo.profiles?.username}</p>
-                          <p className="text-xs text-slate-500 dark:text-slate-400 truncate">{replyingTo.content || (replyingTo.image_url ? '📷 Image' : (replyingTo.audio_url ? '🎤 Voice' : 'Message'))}</p>
-                        </div>
-                      </div>
+            {/* Giphy Picker */}
+            <AnimatePresence>
+              {showGiphyPicker && (
+                <motion.div
+                  initial={{ opacity: 0, y: 20, scale: 0.95 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: 20, scale: 0.95 }}
+                  className="absolute bottom-full left-0 right-0 mb-2 p-4 bg-white dark:bg-slate-900 border border-slate-200 dark:border-white/10 rounded-2xl shadow-2xl z-50 max-h-[400px] flex flex-col gap-4 mx-2"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-4">
                       <button 
-                        type="button"
-                        onClick={() => setReplyingTo(null)}
-                        className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"
+                        onClick={() => {
+                          setIsStickerMode(false);
+                          if (giphySearchQuery) searchGiphy(giphySearchQuery, false);
+                        }}
+                        className={cn(
+                          "text-xs font-bold uppercase tracking-widest transition-colors",
+                          !isStickerMode ? "text-indigo-500" : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+                        )}
                       >
-                        <X className="w-4 h-4" />
+                        GIFs
                       </button>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
+                      <button 
+                        onClick={() => {
+                          setIsStickerMode(true);
+                          if (giphySearchQuery) searchGiphy(giphySearchQuery, true);
+                        }}
+                        className={cn(
+                          "text-xs font-bold uppercase tracking-widest transition-colors",
+                          isStickerMode ? "text-indigo-500" : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+                        )}
+                      >
+                        Stickers
+                      </button>
+                    </div>
+                    <button onClick={() => setShowGiphyPicker(false)} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
 
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                    <input 
+                      type="text"
+                      placeholder={`Search ${isStickerMode ? 'stickers' : 'GIFs'}...`}
+                      value={giphySearchQuery}
+                      onChange={(e) => {
+                        setGiphySearchQuery(e.target.value);
+                        searchGiphy(e.target.value);
+                      }}
+                      className="w-full bg-slate-100 dark:bg-slate-800 border-none rounded-xl py-2.5 pl-10 pr-4 text-sm focus:ring-2 focus:ring-indigo-500/50 outline-none"
+                      autoFocus
+                    />
+                  </div>
+
+                  <div className="flex-1 overflow-y-auto grid grid-cols-2 sm:grid-cols-3 gap-2 pr-2 custom-scrollbar">
+                    {isSearchingGiphy ? (
+                      <div className="col-span-full py-12 flex flex-col items-center justify-center gap-3">
+                        <div className="w-8 h-8 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+                        <p className="text-xs text-slate-500 font-medium">Searching Giphy...</p>
+                      </div>
+                    ) : giphyResults.length > 0 ? (
+                      giphyResults.map((giphy) => (
+                        <button
+                          key={giphy.id}
+                          onClick={() => {
+                            handleSendMessage('', undefined, giphy.images.fixed_height.url);
+                            setShowGiphyPicker(false);
+                            setGiphySearchQuery('');
+                            setGiphyResults([]);
+                          }}
+                          className="aspect-video rounded-lg overflow-hidden bg-slate-100 dark:bg-slate-800 hover:scale-[1.02] transition-transform active:scale-95"
+                        >
+                          <img 
+                            src={giphy.images.fixed_height.url} 
+                            alt={giphy.title} 
+                            className="w-full h-full object-cover"
+                            referrerPolicy="no-referrer"
+                          />
+                        </button>
+                      ))
+                    ) : (
+                      <div className="col-span-full py-12 text-center">
+                        <p className="text-xs text-slate-500">Type something to search Giphy</p>
+                      </div>
+                    )}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Input Bar */}
+            <div className="p-2 bg-whatsapp-header border-t border-white/5 relative z-10">
+              <div className="relative max-w-5xl mx-auto flex items-center gap-2">
+                <div className="flex items-center gap-1">
+                  <button 
+                    type="button"
+                    onClick={() => setShowGiphyPicker(!showGiphyPicker)}
+                    className={cn("p-2 transition-colors", showGiphyPicker ? "text-indigo-400" : "text-slate-400 hover:text-white")}
+                  >
+                    <Smile className="w-6 h-6" />
+                  </button>
+                  <button 
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="p-2 text-slate-400 hover:text-white transition-colors"
+                  >
+                    <Plus className="w-6 h-6" />
+                  </button>
+                </div>
+                
                 <form 
                   onSubmit={(e) => {
                     e.preventDefault();
                     handleSendMessage();
                   }} 
-                  className="relative flex items-center gap-2"
+                  className="flex-1 flex items-center gap-2"
                 >
-                  <div className="relative flex-1">
-                    <div className="flex items-center gap-0.5 sm:gap-1 bg-slate-100 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-2xl p-0.5 sm:p-1 shadow-sm flex-shrink-0">
-                      <button 
-                        type="button"
-                        onClick={() => fileInputRef.current?.click()}
-                        className="p-1.5 sm:p-2 text-slate-500 hover:text-indigo-400 transition-all"
-                        title="Attach File"
-                        disabled={isUploadingFile}
-                      >
-                        <Paperclip className={cn("w-4 h-4 sm:w-5 sm:h-5", isUploadingFile && "animate-pulse")} />
-                      </button>
-                      <input 
-                        type="file" 
-                        ref={fileInputRef}
-                        className="hidden" 
-                        onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          if (file) handleFileUpload(file);
-                        }}
-                      />
-                      <button 
-                        type="button"
-                        onClick={() => imageInputRef.current?.click()}
-                        className="p-1.5 sm:p-2 text-slate-500 hover:text-indigo-400 transition-all"
-                        title="Upload Image"
-                      >
-                        <ImageIcon className="w-4 h-4 sm:w-5 sm:h-5" />
-                      </button>
-                      <input 
-                        type="file" 
-                        ref={imageInputRef}
-                        className="hidden" 
-                        accept="image/*"
-                        onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          if (file) handleImageUpload(file);
-                        }}
-                      />
-                      <button 
-                        type="button"
-                        onClick={() => setShowGiphyPicker(!showGiphyPicker)}
-                        className={cn(
-                          "p-1.5 sm:p-2 transition-all",
-                          showGiphyPicker ? "text-indigo-500" : "text-slate-500 hover:text-indigo-400"
-                        )}
-                        title="Giphy"
-                      >
-                        <SmilePlus className="w-4 h-4 sm:w-5 sm:h-5" />
-                      </button>
-                      <button 
-                        type="button"
-                        onMouseDown={startVideoRecording}
-                        onMouseUp={stopVideoRecording}
-                        onMouseLeave={stopVideoRecording}
-                        onTouchStart={startVideoRecording}
-                        onTouchEnd={stopVideoRecording}
-                        className={cn(
-                          "p-1.5 sm:p-2 transition-all",
-                          isVideoRecording ? "text-red-500 animate-pulse" : "text-slate-500 hover:text-indigo-400"
-                        )}
-                        title="Hold to Record Video"
-                      >
-                        <Video className="w-4 h-4 sm:w-5 sm:h-5" />
-                      </button>
-                      <input
-                        type="text"
-                        id="message-input"
-                        value={newMessage}
-                        onChange={handleMessageChange}
-                        onKeyDown={handleInputKeyDown}
-                        placeholder={activeRoom.is_direct ? `Message @${activeRoom.other_user_profile?.username}` : `Message #${activeRoom.name}`}
-                        disabled={isRecording || isUploadingFile}
-                        className="flex-1 bg-transparent border-none py-2 sm:py-3 px-2 text-slate-800 dark:text-slate-200 focus:outline-none placeholder:text-slate-400 dark:placeholder:text-slate-600 text-sm sm:text-base"
-                        autoComplete="off"
-                      />
-
-                      {/* Mention Suggestions */}
-                      <AnimatePresence>
-                        {showMentions && (
-                          <motion.div 
-                            initial={{ opacity: 0, y: 10 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            exit={{ opacity: 0, y: 10 }}
-                            className="absolute bottom-full left-0 mb-2 w-64 bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-white/5 overflow-hidden z-50"
-                          >
-                            <div className="p-2 max-h-48 overflow-y-auto custom-scrollbar">
-                              {members.filter(m => m.username?.toLowerCase().includes(mentionQuery)).map((member, idx) => (
-                                <button
-                                  key={member.id}
-                                  type="button"
-                                  onClick={() => {
-                                    const words = newMessage.split(' ');
-                                    words.pop();
-                                    setNewMessage([...words, `@${member.username} `].join(' '));
-                                    setShowMentions(false);
-                                    document.getElementById('message-input')?.focus();
-                                  }}
-                                  className={cn(
-                                    "w-full flex items-center gap-3 px-3 py-2 rounded-xl transition-all text-left",
-                                    idx === mentionIndex ? "bg-indigo-500/10 text-indigo-500" : "text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
-                                  )}
-                                >
-                                  <div className="w-8 h-8 rounded-lg bg-slate-200 dark:bg-slate-800 flex items-center justify-center text-xs font-bold overflow-hidden">
-                                    {member.avatar_url ? (
-                                      <img src={member.avatar_url} alt="" className="w-full h-full object-cover" />
-                                    ) : member.username?.[0]?.toUpperCase()}
-                                  </div>
-                                  <div className="flex-1 min-w-0">
-                                    <p className="text-sm font-bold truncate">{member.username}</p>
-                                    <p className="text-[10px] text-slate-500 truncate">@{member.username}</p>
-                                  </div>
-                                </button>
-                              ))}
-                            </div>
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
-                    </div>
+                  <div className="flex-1 relative">
+                    <input
+                      type="text"
+                      id="message-input"
+                      value={newMessage}
+                      onChange={handleMessageChange}
+                      onKeyDown={handleInputKeyDown}
+                      placeholder="Type a message"
+                      disabled={isRecording || isUploadingFile}
+                      className="w-full bg-[#2a3942] border-none rounded-lg py-2.5 px-4 text-white focus:outline-none placeholder:text-slate-500 text-sm"
+                      autoComplete="off"
+                    />
                     
-                    <AnimatePresence>
-                      {showGiphyPicker && (
-                        <motion.div 
-                          initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                          animate={{ opacity: 1, y: 0, scale: 1 }}
-                          exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                          className="absolute bottom-full left-0 mb-4 w-[320px] sm:w-[400px] h-[450px] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl shadow-2xl overflow-hidden z-50 flex flex-col"
-                        >
-                          <div className="p-4 border-b border-slate-100 dark:border-white/5 flex flex-col gap-3">
-                            <div className="flex items-center justify-between">
-                              <div className="flex bg-slate-100 dark:bg-slate-800 rounded-lg p-1">
-                                <button
-                                  onClick={() => {
-                                    setIsStickerMode(false);
-                                    if (giphySearchQuery) searchGiphy(giphySearchQuery, false);
-                                  }}
-                                  className={cn(
-                                    "px-3 py-1 text-xs font-bold rounded-md transition-all",
-                                    !isStickerMode ? "bg-white dark:bg-slate-700 text-indigo-500 shadow-sm" : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
-                                  )}
-                                >
-                                  GIFs
-                                </button>
-                                <button
-                                  onClick={() => {
-                                    setIsStickerMode(true);
-                                    if (giphySearchQuery) searchGiphy(giphySearchQuery, true);
-                                  }}
-                                  className={cn(
-                                    "px-3 py-1 text-xs font-bold rounded-md transition-all",
-                                    isStickerMode ? "bg-white dark:bg-slate-700 text-indigo-500 shadow-sm" : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
-                                  )}
-                                >
-                                  Stickers
-                                </button>
-                              </div>
-                              <button 
-                                onClick={() => setShowGiphyPicker(false)}
-                                className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors"
-                              >
-                                <X className="w-5 h-5" />
-                              </button>
-                            </div>
-                            <div className="relative flex-1">
-                              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                              <input 
-                                type="text"
-                                placeholder={`Search ${isStickerMode ? 'Stickers' : 'Giphy'}...`}
-                                value={giphySearchQuery}
-                                onChange={(e) => {
-                                  setGiphySearchQuery(e.target.value);
-                                  searchGiphy(e.target.value, isStickerMode);
-                                }}
-                                className="w-full bg-slate-100 dark:bg-slate-800 border-none rounded-xl pl-10 pr-4 py-2 text-sm focus:ring-2 focus:ring-indigo-500/50 transition-all"
-                                autoFocus
-                              />
-                            </div>
-                          </div>
-                          <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
-                            {isSearchingGiphy ? (
-                              <div className="flex flex-col items-center justify-center h-full gap-3">
-                                <div className="w-8 h-8 border-4 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin" />
-                                <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Searching Giphy...</p>
-                              </div>
-                            ) : giphyResults.length > 0 ? (
-                              <div className="grid grid-cols-2 gap-2">
-                                {giphyResults.map((gif) => (
-                                  <button
-                                    key={gif.id}
-                                    onClick={() => {
-                                      handleSendMessage('', undefined, gif.images.fixed_height.url);
-                                      setShowGiphyPicker(false);
-                                    }}
-                                    className="relative aspect-video rounded-xl overflow-hidden group hover:ring-2 hover:ring-indigo-500 transition-all"
-                                  >
-                                    <img 
-                                      src={gif.images.fixed_height.url} 
-                                      alt={gif.title} 
-                                      className="w-full h-full object-cover"
-                                      referrerPolicy="no-referrer"
-                                    />
-                                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                                      <Send className="w-6 h-6 text-white" />
-                                    </div>
-                                  </button>
-                                ))}
-                              </div>
-                            ) : (
-                              <div className="flex flex-col items-center justify-center h-full text-center p-6 space-y-3">
-                                <div className="w-12 h-12 bg-slate-100 dark:bg-slate-800 rounded-2xl flex items-center justify-center">
-                                  <Search className="w-6 h-6 text-slate-400" />
-                                </div>
-                                <p className="text-sm text-slate-500">
-                                  {giphySearchQuery ? "No GIFs found for this search" : "Search for GIFs to send to your friends"}
-                                </p>
-                              </div>
-                            )}
-                          </div>
-                          <div className="p-3 bg-slate-50 dark:bg-slate-950 border-t border-slate-100 dark:border-white/5 flex items-center justify-center">
-                            <img src="https://giphy.com/static/img/powered_by_giphy_light.png" alt="Powered by Giphy" className="h-4 opacity-50" />
-                          </div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-
-                    <AnimatePresence>
-                      {showMentions && (
-                        <motion.div 
-                          initial={{ opacity: 0, y: 10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          exit={{ opacity: 0, y: 10 }}
-                          className="absolute bottom-full left-0 mb-2 w-64 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-xl overflow-hidden z-50"
-                        >
-                          {members.filter(m => m.username?.toLowerCase().includes(mentionQuery)).length > 0 ? (
-                            members.filter(m => m.username?.toLowerCase().includes(mentionQuery)).map((member, idx) => (
-                              <button
-                                key={member.id}
-                                type="button"
-                                className={cn(
-                                  "w-full text-left px-4 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-2 transition-colors",
-                                  mentionIndex === idx && "bg-slate-100 dark:bg-slate-800"
-                                )}
-                                onClick={() => {
-                                  const words = newMessage.split(' ');
-                                  words.pop();
-                                  setNewMessage([...words, `@${member.username} `].join(' '));
-                                  setShowMentions(false);
-                                  document.getElementById('message-input')?.focus();
-                                }}
-                              >
-                                <div className="w-6 h-6 rounded-full bg-indigo-100 dark:bg-indigo-900/50 flex items-center justify-center text-indigo-600 dark:text-indigo-400 text-xs font-bold flex-shrink-0">
-                                  {member.avatar_url ? (
-                                    <img src={member.avatar_url} alt={member.username} className="w-full h-full rounded-full object-cover" />
-                                  ) : (
-                                    member.username?.[0]?.toUpperCase()
-                                  )}
-                                </div>
-                                <span className="text-sm font-medium text-slate-900 dark:text-slate-200 truncate">{member.username}</span>
-                              </button>
-                            ))
-                          ) : (
-                            <div className="px-4 py-3 text-sm text-slate-500 text-center">No members found</div>
-                          )}
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-
+                    {scheduledAt && (
+                      <div className="absolute -top-10 left-0 bg-indigo-600 text-white text-[10px] font-bold px-3 py-1 rounded-full flex items-center gap-2 shadow-lg animate-in fade-in slide-in-from-bottom-2">
+                        <History className="w-3 h-3" />
+                        Scheduled for: {format(new Date(scheduledAt), 'MMM d, HH:mm')}
+                        <button onClick={() => setScheduledAt(null)} className="hover:text-red-200">
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  
+                  <div className="flex items-center gap-1">
+                    {!activeCallUrl && (
+                      <button 
+                        type="button"
+                        onClick={() => setActiveCallUrl(`NexChat-${activeRoom.id}`)}
+                        className="p-2 transition-colors text-slate-400 hover:text-white"
+                        title="Start Video Call"
+                      >
+                        <Video className="w-5 h-5" />
+                      </button>
+                    )}
+                    <button 
+                      type="button"
+                      onClick={() => setShowScheduleModal(true)}
+                      className={cn("p-2 transition-colors", scheduledAt ? "text-indigo-400" : "text-slate-400 hover:text-white")}
+                      title="Schedule Message"
+                    >
+                      <History className="w-5 h-5" />
+                    </button>
+                    
+                    {newMessage.trim() ? (
+                      <button 
+                        type="submit"
+                        className="p-2.5 bg-whatsapp-green text-black rounded-full hover:opacity-90 transition-all shadow-lg"
+                      >
+                        <Send className="w-5 h-5" />
+                      </button>
+                    ) : (
                       <button 
                         type="button"
                         onClick={startRecording}
-                        disabled={isUploadingVoice}
-                        className="p-1.5 sm:p-2 text-slate-500 hover:text-indigo-500 transition-all"
+                        className="p-2.5 bg-whatsapp-green text-black rounded-full hover:opacity-90 transition-all shadow-lg"
                       >
-                        <Mic className="w-4 h-4 sm:w-5 sm:h-5" />
+                        <Mic className="w-5 h-5" />
                       </button>
-                      
-                      <button 
-                        type="submit"
-                        disabled={!newMessage.trim() || isUploadingVoice}
-                        className="p-1.5 sm:p-2 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 disabled:opacity-50 transition-all shadow-md shadow-indigo-500/20"
-                      >
-                        <Send className="w-4 h-4 sm:w-5 sm:h-5" />
-                      </button>
-                    </div>
+                    )}
+                  </div>
                 </form>
               </div>
             </div>
           </>
         ) : (
-          <div className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-6">
-            <div className="w-20 h-20 bg-slate-100 dark:bg-slate-900 rounded-3xl flex items-center justify-center border border-slate-200 dark:border-slate-800 shadow-xl">
-              <MessageSquare className="w-10 h-10 text-indigo-500" />
+          <div className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-6 bg-[#111b21]">
+            <div className="w-20 h-20 flex items-center justify-center">
+              <Logo className="w-20 h-20 text-slate-600" />
             </div>
             <div className="space-y-2 max-w-sm">
-              <h2 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">Welcome to ChitChat</h2>
-              <p className="text-slate-600 dark:text-slate-500 leading-relaxed">Select a room from the sidebar or create a new one to start talking with your friends.</p>
+              <h2 className="text-2xl font-bold text-white tracking-tight">Nex Chat Web</h2>
+              <p className="text-slate-500 leading-relaxed">Send and receive messages without keeping your phone online. Use Nex Chat on up to 4 linked devices and 1 phone at the same time.</p>
             </div>
-            <div className="flex flex-col sm:flex-row gap-3 w-full max-w-[280px]">
-              <Button onClick={() => setShowJoinModal(true)} variant="outline" className="w-full">Join Room</Button>
-              <Button onClick={() => setShowCreateModal(true)} className="w-full">Create Room</Button>
+            <div className="mt-auto flex items-center gap-2 text-slate-500 text-xs">
+              <Lock className="w-3 h-3" />
+              <span>End-to-end encrypted</span>
             </div>
           </div>
         )}
@@ -4755,128 +4649,185 @@ export const ChatDashboard = ({ user }: { user: any }) => {
               window.innerWidth < 1024 ? "w-full" : "w-64"
             )}
           >
-            <div className="p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                  Members — {members.length}
-                </h3>
+            <div className="p-6 flex flex-col h-full">
+              <div className="flex items-center justify-between mb-4 flex-shrink-0">
+                <div className="flex items-center gap-4">
+                  <button 
+                    onClick={() => setRightSidebarTab('members')}
+                    className={cn(
+                      "text-xs font-semibold uppercase tracking-wider transition-colors",
+                      rightSidebarTab === 'members' ? "text-indigo-500 dark:text-indigo-400" : "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300"
+                    )}
+                  >
+                    Members — {members.length}
+                  </button>
+                  <button 
+                    onClick={() => setRightSidebarTab('media')}
+                    className={cn(
+                      "text-xs font-semibold uppercase tracking-wider transition-colors",
+                      rightSidebarTab === 'media' ? "text-indigo-500 dark:text-indigo-400" : "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300"
+                    )}
+                  >
+                    Media
+                  </button>
+                </div>
                 <button onClick={() => setShowMembers(false)} className="lg:hidden text-slate-500 hover:text-slate-900 dark:hover:text-white transition-colors">
                   <X className="w-4 h-4" />
                 </button>
               </div>
-              <div className="space-y-3">
-                {members.map((member) => (
-                  <div key={member.id} className="flex items-center justify-between group">
-                    <div className="flex items-center gap-3">
-                      <div className="relative">
-                        <div className="w-8 h-8 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-indigo-400 text-xs font-bold overflow-hidden">
-                          {member.avatar_url ? (
-                            <img src={member.avatar_url} alt="Avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                          ) : (
-                            member.username?.[0]?.toUpperCase() || '?'
-                          )}
-                        </div>
-                        <div className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-white dark:border-slate-900 ${onlineUsers.has(member.id) ? 'bg-emerald-500' : 'bg-slate-400'}`} />
-                      </div>
-                      <div className="flex flex-col">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-medium text-slate-600 dark:text-slate-400 group-hover:text-slate-900 dark:group-hover:text-slate-200 transition-colors">
-                            {member.username || 'Unknown'}
-                          </span>
-                          <span className={cn(
-                            "text-[10px] font-medium",
-                            onlineUsers.has(member.id) ? "text-emerald-500" : "text-slate-400"
-                          )}>
-                            {onlineUsers.has(member.id) ? 'Online' : (member.last_seen ? `Last seen ${format(new Date(member.last_seen), 'HH:mm')}` : 'Offline')}
-                          </span>
-                          {activeRoom.created_by === member.id && (
-                            <Crown className="w-3 h-3 text-amber-400 fill-amber-400/20" />
-                          )}
-                          {member.id === user.id && (
-                            <span className="text-[8px] bg-indigo-500/20 text-indigo-400 px-1.5 py-0.5 rounded-md font-bold uppercase tracking-tighter">You</span>
-                          )}
-                        </div>
-                        {member.status && (
-                          <p className="text-[10px] text-slate-500 dark:text-slate-500 italic truncate max-w-[150px]">
-                            {member.status}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                      {member.id !== user.id && (
-                        <Button 
-                          variant="ghost" 
-                          size="icon" 
-                          className="w-8 h-8 text-indigo-400 hover:bg-indigo-500/10"
-                          onClick={() => handleStartDM(member)}
-                          title={`Message ${member.username}`}
-                        >
-                          <Send className="w-4 h-4" />
-                        </Button>
-                      )}
-                      {activeRoom.created_by === user.id && member.id !== user.id && (
-                        <Button 
-                          variant="ghost" 
-                          size="icon" 
-                          className="w-8 h-8 text-red-400 hover:bg-red-500/10"
-                          onClick={() => handleKickMember(member.id)}
-                          title={`Kick ${member.username}`}
-                        >
-                          <X className="w-4 h-4" />
-                        </Button>
-                      )}
-                      <div className={cn(
-                        "w-2 h-2 rounded-full transition-all duration-300",
-                        onlineUsers.has(member.id) 
-                          ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" 
-                          : "bg-slate-600"
-                      )} title={onlineUsers.has(member.id) ? "Online" : "Offline"} />
-                    </div>
-                  </div>
-                ))}
-              </div>
 
-              {/* Media & Files Gallery */}
-              <div className="mt-8 pt-8 border-t border-slate-200 dark:border-white/5">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                    Media & Files
-                  </h3>
-                </div>
-                
-                {(() => {
-                  const mediaMessages = messages.filter(m => m.image_url || m.file_url);
-                  if (mediaMessages.length === 0) {
-                    return <p className="text-[10px] text-slate-500 italic text-center py-4">No media shared yet</p>;
-                  }
-                  
-                  return (
-                    <div className="grid grid-cols-3 gap-2">
-                      {mediaMessages.slice(0, 9).map((msg) => (
-                        <div 
-                          key={msg.id} 
-                          className="aspect-square rounded-lg bg-slate-100 dark:bg-slate-800 overflow-hidden border border-slate-200 dark:border-white/5 cursor-pointer hover:opacity-80 transition-opacity group relative"
-                          onClick={() => window.open(msg.image_url || msg.file_url, '_blank')}
-                        >
-                          {msg.image_url ? (
-                            <img src={msg.image_url} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                          ) : (
-                            <div className="w-full h-full flex flex-col items-center justify-center p-1">
-                              <Paperclip className="w-4 h-4 text-slate-500" />
-                              <span className="text-[8px] text-slate-500 truncate w-full text-center mt-1">{msg.file_name}</span>
+              <div className="flex-1 overflow-y-auto pr-2 -mr-2">
+                {rightSidebarTab === 'members' ? (
+                  <div className="space-y-3 pb-6">
+                    {members.map((member) => (
+                      <div key={member.id} className="flex items-center justify-between group">
+                        <div className="flex items-center gap-3">
+                          <div className="relative">
+                            <div className="w-8 h-8 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-center text-indigo-400 text-xs font-bold overflow-hidden">
+                              {member.avatar_url ? (
+                                <img src={member.avatar_url} alt="Avatar" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                              ) : (
+                                member.username?.[0]?.toUpperCase() || '?'
+                              )}
                             </div>
-                          )}
+                            <div className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-white dark:border-slate-900 ${onlineUsers.has(member.id) ? 'bg-emerald-500' : 'bg-slate-400'}`} />
+                          </div>
+                          <div className="flex flex-col">
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-medium text-slate-600 dark:text-slate-400 group-hover:text-slate-900 dark:group-hover:text-slate-200 transition-colors">
+                                {member.username || 'Unknown'}
+                              </span>
+                              <span className={cn(
+                                "text-[10px] font-medium",
+                                onlineUsers.has(member.id) ? "text-emerald-500" : "text-slate-400"
+                              )}>
+                                {onlineUsers.has(member.id) ? 'Online' : (member.last_seen ? `Last seen ${format(new Date(member.last_seen), 'HH:mm')}` : 'Offline')}
+                              </span>
+                              {activeRoom.created_by === member.id && (
+                                <Crown className="w-3 h-3 text-amber-400 fill-amber-400/20" />
+                              )}
+                              {member.id === user.id && (
+                                <span className="text-[8px] bg-indigo-500/20 text-indigo-400 px-1.5 py-0.5 rounded-md font-bold uppercase tracking-tighter">You</span>
+                              )}
+                            </div>
+                            {member.status && (
+                              <p className="text-[10px] text-slate-500 dark:text-slate-500 italic truncate max-w-[150px]">
+                                {member.status}
+                              </p>
+                            )}
+                          </div>
                         </div>
-                      ))}
+                        <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                          {member.id !== user.id && (
+                            <Button 
+                              variant="ghost" 
+                              size="icon" 
+                              className="w-8 h-8 text-indigo-400 hover:bg-indigo-500/10"
+                              onClick={() => handleStartDM(member)}
+                              title={`Message ${member.username}`}
+                            >
+                              <Send className="w-4 h-4" />
+                            </Button>
+                          )}
+                          {activeRoom.created_by === user.id && member.id !== user.id && (
+                            <Button 
+                              variant="ghost" 
+                              size="icon" 
+                              className="w-8 h-8 text-red-400 hover:bg-red-500/10"
+                              onClick={() => handleKickMember(member.id)}
+                              title={`Kick ${member.username}`}
+                            >
+                              <X className="w-4 h-4" />
+                            </Button>
+                          )}
+                          <div className={cn(
+                            "w-2 h-2 rounded-full transition-all duration-300",
+                            onlineUsers.has(member.id) 
+                              ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" 
+                              : "bg-slate-600"
+                          )} title={onlineUsers.has(member.id) ? "Online" : "Offline"} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="space-y-4 pb-6">
+                    <div className="flex items-center gap-2">
+                      <select 
+                        value={mediaFilter}
+                        onChange={(e) => setMediaFilter(e.target.value as any)}
+                        className="flex-1 text-xs bg-slate-100 dark:bg-slate-800 border-none rounded-md px-2 py-1.5 text-slate-600 dark:text-slate-300 focus:ring-1 focus:ring-indigo-500 outline-none cursor-pointer"
+                      >
+                        <option value="all">All Media</option>
+                        <option value="images">Images</option>
+                        <option value="videos">Videos</option>
+                        <option value="files">Files</option>
+                      </select>
+                      <select 
+                        value={mediaSort}
+                        onChange={(e) => setMediaSort(e.target.value as any)}
+                        className="flex-1 text-xs bg-slate-100 dark:bg-slate-800 border-none rounded-md px-2 py-1.5 text-slate-600 dark:text-slate-300 focus:ring-1 focus:ring-indigo-500 outline-none cursor-pointer"
+                      >
+                        <option value="newest">Newest First</option>
+                        <option value="oldest">Oldest First</option>
+                      </select>
                     </div>
-                  );
-                })()}
-                
-                {messages.filter(m => m.image_url || m.file_url).length > 9 && (
-                  <button className="w-full mt-3 py-2 text-[10px] font-bold text-indigo-400 hover:text-indigo-300 uppercase tracking-widest transition-colors">
-                    View All Media
-                  </button>
+                    
+                    {(() => {
+                      let mediaMessages = messages.filter(m => m.image_url || m.file_url);
+                      
+                      if (mediaFilter === 'images') {
+                        mediaMessages = mediaMessages.filter(m => m.image_url || (m.file_type && m.file_type.startsWith('image/')));
+                      } else if (mediaFilter === 'videos') {
+                        mediaMessages = mediaMessages.filter(m => m.file_type && m.file_type.startsWith('video/'));
+                      } else if (mediaFilter === 'files') {
+                        mediaMessages = mediaMessages.filter(m => m.file_url && !m.image_url && !(m.file_type && m.file_type.startsWith('video/')));
+                      }
+                      
+                      if (mediaSort === 'newest') {
+                        mediaMessages.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+                      } else {
+                        mediaMessages.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+                      }
+
+                      if (mediaMessages.length === 0) {
+                        return (
+                          <div className="flex flex-col items-center justify-center py-8 text-center space-y-3">
+                            <div className="w-12 h-12 bg-slate-100 dark:bg-slate-800 rounded-full flex items-center justify-center">
+                              <ImageIcon className="w-5 h-5 text-slate-400" />
+                            </div>
+                            <p className="text-xs text-slate-500 dark:text-slate-400">No media found</p>
+                          </div>
+                        );
+                      }
+                      
+                      return (
+                        <div className="grid grid-cols-3 gap-2">
+                          {mediaMessages.map((msg) => (
+                            <div 
+                              key={msg.id} 
+                              className="aspect-square rounded-lg bg-slate-100 dark:bg-slate-800 overflow-hidden border border-slate-200 dark:border-white/5 cursor-pointer hover:opacity-80 transition-opacity group relative"
+                              onClick={() => window.open(msg.image_url || msg.file_url, '_blank')}
+                            >
+                              {msg.image_url ? (
+                                <img src={msg.image_url} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                              ) : msg.file_type?.startsWith('video/') ? (
+                                <div className="w-full h-full flex flex-col items-center justify-center bg-slate-900 relative">
+                                  <Video className="w-6 h-6 text-white/50" />
+                                  <div className="absolute inset-0 bg-black/20 group-hover:bg-black/40 transition-colors" />
+                                </div>
+                              ) : (
+                                <div className="w-full h-full flex flex-col items-center justify-center p-1 relative">
+                                  <Paperclip className="w-4 h-4 text-slate-500" />
+                                  <span className="text-[8px] text-slate-500 truncate w-full text-center mt-1 px-1">{msg.file_name}</span>
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
+                  </div>
                 )}
               </div>
             </div>
@@ -5204,7 +5155,7 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                   </div>
                 ) : (
                   <div className="flex flex-col items-center justify-center py-12 text-center">
-                    <MessageSquare className="w-12 h-12 text-slate-300 dark:text-slate-700 mb-4" />
+                    <Logo className="w-12 h-12 text-slate-300 dark:text-slate-700 mb-4" />
                     <p className="text-slate-500 dark:text-slate-400">Type to search across all your rooms</p>
                   </div>
                 )}
@@ -6290,7 +6241,243 @@ export const ChatDashboard = ({ user }: { user: any }) => {
           </>
         )}
 
-        {/* Record Consent Modal */}
+        {/* Schedule Modal */}
+        {showScheduleModal && (
+          <Modal onClose={() => setShowScheduleModal(false)} title="Schedule Message">
+            <div className="space-y-6">
+              <div className="space-y-4">
+                <p className="text-xs text-slate-500 leading-relaxed">Choose a time to send your message. It will be sent automatically even if you're offline.</p>
+                <Input 
+                  type="datetime-local"
+                  min={new Date().toISOString().slice(0, 16)}
+                  onChange={(e) => setScheduledAt(e.target.value)}
+                  className="bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-white/5"
+                />
+              </div>
+
+              <div className="flex gap-3">
+                <Button 
+                  variant="ghost"
+                  onClick={() => {
+                    setScheduledAt(null);
+                    setShowScheduleModal(false);
+                  }}
+                  className="flex-1 py-6 text-xs font-bold uppercase tracking-widest"
+                >
+                  Cancel
+                </Button>
+                <Button 
+                  onClick={() => setShowScheduleModal(false)}
+                  disabled={!scheduledAt}
+                  className="flex-1 py-6 text-xs font-bold uppercase tracking-widest bg-indigo-600 hover:bg-indigo-500 text-white shadow-xl shadow-indigo-500/20"
+                >
+                  Set Schedule
+                </Button>
+              </div>
+            </div>
+          </Modal>
+        )}
+
+        {/* Wallpaper Modal */}
+        {showWallpaperModal && (
+          <Modal onClose={() => setShowWallpaperModal(false)} title="Chat Wallpaper">
+            <div className="space-y-6">
+              <div className="grid grid-cols-3 gap-3">
+                {[
+                  '',
+                  'https://images.unsplash.com/photo-1557683316-973673baf926?auto=format&fit=crop&w=400&q=80',
+                  'https://images.unsplash.com/photo-1579546929518-9e396f3cc809?auto=format&fit=crop&w=400&q=80',
+                  'https://images.unsplash.com/photo-1550684848-fac1c5b4e853?auto=format&fit=crop&w=400&q=80',
+                  'https://images.unsplash.com/photo-1501691223387-dd050040307d?auto=format&fit=crop&w=400&q=80',
+                  'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=400&q=80'
+                ].map((url, i) => (
+                  <button
+                    key={i}
+                    onClick={() => {
+                      setCustomWallpaper(url);
+                      localStorage.setItem('chatWallpaper', url);
+                    }}
+                    className={cn(
+                      "aspect-[9/16] rounded-xl border-2 transition-all overflow-hidden relative group",
+                      customWallpaper === url ? "border-indigo-500 scale-95" : "border-transparent hover:border-slate-300 dark:hover:border-slate-700"
+                    )}
+                  >
+                    {url ? (
+                      <img src={url} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                    ) : (
+                      <div className="w-full h-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-[10px] font-bold text-slate-400 uppercase tracking-tighter">Default</div>
+                    )}
+                    {customWallpaper === url && (
+                      <div className="absolute inset-0 bg-indigo-500/20 flex items-center justify-center">
+                        <Check className="w-6 h-6 text-white" />
+                      </div>
+                    )}
+                  </button>
+                ))}
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Custom URL</label>
+                <div className="flex gap-2">
+                  <Input 
+                    placeholder="https://example.com/image.jpg"
+                    value={customWallpaper}
+                    onChange={(e) => {
+                      setCustomWallpaper(e.target.value);
+                      localStorage.setItem('chatWallpaper', e.target.value);
+                    }}
+                    className="bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-white/5"
+                  />
+                </div>
+              </div>
+
+              <Button 
+                onClick={() => setShowWallpaperModal(false)}
+                className="w-full py-6 text-sm font-bold uppercase tracking-widest bg-indigo-600 hover:bg-indigo-500 text-white shadow-xl shadow-indigo-500/20"
+              >
+                Apply Wallpaper
+              </Button>
+            </div>
+          </Modal>
+        )}
+
+        {/* Snap Map Modal */}
+      {showMap && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.9, y: 20 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            className="bg-white dark:bg-slate-900 w-full max-w-4xl h-[80vh] rounded-3xl overflow-hidden shadow-2xl flex flex-col border border-white/10"
+          >
+            <div className="p-6 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-indigo-600 text-white">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-white/20 rounded-xl">
+                  <MapPin className="w-6 h-6" />
+                </div>
+                <div>
+                  <h2 className="text-xl font-bold">Snap Map</h2>
+                  <p className="text-xs text-white/70">See where your friends are</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setShowMap(false)}
+                className="p-2 hover:bg-white/10 rounded-full transition-colors"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+            
+            <div className="flex-1 relative bg-slate-100 dark:bg-slate-950 overflow-hidden">
+              {/* Mock Map Background */}
+              <div className="absolute inset-0 opacity-40 pointer-events-none">
+                <div className="w-full h-full bg-[radial-gradient(#6366f1_1px,transparent_1px)] [background-size:20px_20px]" />
+              </div>
+              
+              {/* User Avatars on Map */}
+              <div className="relative w-full h-full">
+                <motion.div 
+                  initial={{ x: 200, y: 150 }}
+                  className="absolute flex flex-col items-center gap-1 group cursor-pointer"
+                >
+                  <div className="w-12 h-12 rounded-full border-4 border-indigo-500 bg-white dark:bg-slate-800 p-0.5 shadow-lg group-hover:scale-110 transition-transform">
+                    <img src={user.user_metadata.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.email}`} alt="" className="w-full h-full rounded-full object-cover" />
+                  </div>
+                  <span className="px-2 py-0.5 bg-indigo-600 text-white text-[10px] font-bold rounded-full shadow-md">You</span>
+                </motion.div>
+                
+                {members.slice(0, 5).map((member, i) => (
+                  <motion.div 
+                    key={member.id}
+                    initial={{ x: 100 + (i * 120), y: 100 + (i * 80) }}
+                    className="absolute flex flex-col items-center gap-1 group cursor-pointer"
+                  >
+                    <div className="w-10 h-10 rounded-full border-2 border-white bg-slate-200 dark:bg-slate-700 p-0.5 shadow-md group-hover:scale-110 transition-transform">
+                      {member.avatar_url ? (
+                        <img src={member.avatar_url} alt="" className="w-full h-full rounded-full object-cover" referrerPolicy="no-referrer" />
+                      ) : (
+                        <div className="w-full h-full rounded-full flex items-center justify-center text-xs font-bold bg-indigo-500 text-white">
+                          {member.username[0].toUpperCase()}
+                        </div>
+                      )}
+                    </div>
+                    <span className="px-2 py-0.5 bg-white dark:bg-slate-800 text-slate-900 dark:text-white text-[9px] font-medium rounded-full shadow-sm border border-slate-200 dark:border-slate-700">{member.username}</span>
+                  </motion.div>
+                ))}
+              </div>
+              
+              <div className="absolute bottom-6 left-6 right-6 flex items-center justify-between">
+                <div className="p-4 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xl max-w-xs">
+                  <p className="text-xs font-bold text-slate-900 dark:text-white mb-1">Live Location Sharing</p>
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed">Your location is only shared with friends while you have the map open.</p>
+                </div>
+                
+                <button 
+                  onClick={() => {
+                    navigator.geolocation.getCurrentPosition((pos) => {
+                      setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+                      showToast('Location updated!');
+                    });
+                  }}
+                  className="p-4 bg-indigo-600 text-white rounded-2xl shadow-xl hover:bg-indigo-500 transition-all active:scale-95 flex items-center gap-2 font-bold text-sm"
+                >
+                  <Navigation className="w-5 h-5" />
+                  Update My Location
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Community Modal */}
+      {showCommunityModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.9, y: 20 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            className="bg-white dark:bg-slate-900 w-full max-w-md rounded-3xl overflow-hidden shadow-2xl border border-white/10"
+          >
+            <div className="p-6 bg-indigo-600 text-white flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-white/20 rounded-xl">
+                  <Users className="w-6 h-6" />
+                </div>
+                <h2 className="text-xl font-bold">Create Community</h2>
+              </div>
+              <button onClick={() => setShowCommunityModal(false)} className="p-2 hover:bg-white/10 rounded-full transition-colors">
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+            
+            <div className="p-6 space-y-6">
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-widest">Community Name</label>
+                <input 
+                  type="text"
+                  value={communityName}
+                  onChange={(e) => setCommunityName(e.target.value)}
+                  placeholder="e.g. University Tech Club"
+                  className="w-full px-4 py-3 bg-slate-100 dark:bg-slate-800 rounded-xl border border-transparent focus:border-indigo-500 focus:bg-white dark:focus:bg-slate-950 transition-all outline-none"
+                />
+              </div>
+              
+              <div className="p-4 bg-indigo-500/10 rounded-2xl border border-indigo-500/20">
+                <p className="text-xs text-indigo-600 dark:text-indigo-400 leading-relaxed font-medium">
+                  Communities allow you to organize multiple chat groups under one umbrella. Perfect for schools, clubs, or large organizations.
+                </p>
+              </div>
+              
+              <button 
+                onClick={handleCreateCommunity}
+                disabled={!communityName.trim()}
+                className="w-full py-4 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-500 transition-all active:scale-95 disabled:opacity-50 disabled:active:scale-100 shadow-lg shadow-indigo-600/20"
+              >
+                Launch Community
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
         {showRecordConsent && (
           <Modal onClose={() => setShowRecordConsent(false)} title="Record Video Call">
             <div className="p-6 space-y-4">
@@ -6311,121 +6498,6 @@ export const ChatDashboard = ({ user }: { user: any }) => {
                   Start Recording
                 </Button>
               </div>
-            </div>
-          </Modal>
-        )}
-
-        {/* Story View Modal */}
-        {showStoryModal && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black">
-            <div className="relative w-full h-full max-w-lg flex flex-col">
-              <div className="absolute top-0 left-0 right-0 p-4 bg-gradient-to-b from-black/60 to-transparent z-10 flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-full border-2 border-indigo-500 p-0.5">
-                    <div className="w-full h-full rounded-full bg-slate-800 flex items-center justify-center text-xs font-bold overflow-hidden">
-                      {showStoryModal.profiles?.avatar_url ? (
-                        <img src={showStoryModal.profiles.avatar_url} alt="" className="w-full h-full object-cover" />
-                      ) : showStoryModal.profiles?.username?.[0]?.toUpperCase() || '?'}
-                    </div>
-                  </div>
-                  <div>
-                    <p className="text-sm font-bold text-white">{showStoryModal.profiles?.username || 'User'}</p>
-                    <p className="text-[10px] text-slate-300">{format(new Date(showStoryModal.created_at), 'HH:mm')}</p>
-                  </div>
-                </div>
-                <button onClick={() => setShowStoryModal(null)} className="p-2 text-white hover:bg-white/10 rounded-full transition-all">
-                  <X className="w-6 h-6" />
-                </button>
-              </div>
-
-              <div className="flex-1 flex items-center justify-center bg-slate-900">
-                {showStoryModal.media_type === 'image' ? (
-                  <img src={showStoryModal.media_url} alt="" className="max-w-full max-h-full object-contain" />
-                ) : (
-                  <video src={showStoryModal.media_url} controls autoPlay className="max-w-full max-h-full" />
-                )}
-              </div>
-
-              {showStoryModal.caption && (
-                <div className="absolute bottom-0 left-0 right-0 p-8 bg-gradient-to-t from-black/80 to-transparent text-center">
-                  <p className="text-white text-lg font-medium">{showStoryModal.caption}</p>
-                </div>
-              )}
-
-              {/* Story Progress Bar */}
-              <div className="absolute top-0 left-0 right-0 h-1 flex gap-1 p-1">
-                <div className="flex-1 h-full bg-white/30 rounded-full overflow-hidden">
-                  <motion.div 
-                    initial={{ width: 0 }}
-                    animate={{ width: '100%' }}
-                    transition={{ duration: 5, ease: 'linear' }}
-                    onAnimationComplete={() => {
-                      const userStories = stories.filter(s => s.user_id === showStoryModal.user_id);
-                      const currentIndex = userStories.findIndex(s => s.id === showStoryModal.id);
-                      if (currentIndex < userStories.length - 1) {
-                        setShowStoryModal(userStories[currentIndex + 1]);
-                        handleViewStory(userStories[currentIndex + 1].id);
-                      } else {
-                        setShowStoryModal(null);
-                      }
-                    }}
-                    className="h-full bg-white"
-                  />
-                </div>
-              </div>
-
-              {/* View Count (if owner) */}
-              {showStoryModal.user_id === user.id && (
-                <div className="absolute bottom-4 left-4 flex items-center gap-1.5 text-white/80 text-xs bg-black/40 px-3 py-1.5 rounded-full backdrop-blur-sm">
-                  <Eye className="w-3.5 h-3.5" />
-                  <span>{showStoryModal.views?.length || 0} views</span>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Create Story Modal */}
-        {showCreateStoryModal && (
-          <Modal onClose={() => setShowCreateStoryModal(false)} title="Create Story">
-            <div className="space-y-6">
-              <div className="flex flex-col items-center justify-center p-8 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-2xl bg-slate-50 dark:bg-slate-900/50 group hover:border-indigo-500 transition-colors cursor-pointer relative overflow-hidden">
-                <input 
-                  type="file" 
-                  accept="image/*,video/*"
-                  className="absolute inset-0 opacity-0 cursor-pointer"
-                  onChange={async (e) => {
-                    const file = e.target.files?.[0];
-                    if (!file) return;
-                    
-                    try {
-                      showToast('Uploading story...', 'success');
-                      const fileExt = file.name.split('.').pop();
-                      const fileName = `${user.id}/${Math.random()}.${fileExt}`;
-                      const { data, error } = await supabase.storage
-                        .from('chat-assets')
-                        .upload(fileName, file);
-                      
-                      if (error) throw error;
-                      
-                      const { data: { publicUrl } } = supabase.storage
-                        .from('chat-assets')
-                        .getPublicUrl(fileName);
-                      
-                      handlePostStory(publicUrl, file.type.startsWith('video') ? 'video' : 'image');
-                    } catch (error) {
-                      console.error('Error uploading story:', error);
-                      showToast('Upload failed', 'error');
-                    }
-                  }}
-                />
-                <div className="w-16 h-16 rounded-2xl bg-indigo-500/10 flex items-center justify-center text-indigo-500 mb-4 group-hover:scale-110 transition-transform">
-                  <Camera className="w-8 h-8" />
-                </div>
-                <p className="text-sm font-bold text-slate-900 dark:text-white">Upload Photo or Video</p>
-                <p className="text-xs text-slate-500 mt-1">Stories disappear after 24 hours</p>
-              </div>
-              <Button variant="ghost" className="w-full" onClick={() => setShowCreateStoryModal(false)}>Cancel</Button>
             </div>
           </Modal>
         )}

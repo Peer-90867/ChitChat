@@ -32,7 +32,7 @@ export default function App() {
       <div className="min-h-screen bg-slate-50 dark:bg-[#020617] flex items-center justify-center transition-colors duration-300">
         <div className="space-y-4 text-center">
           <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto" />
-          <p className="text-slate-500 dark:text-slate-400 text-sm animate-pulse">Initializing ChitChat...</p>
+          <p className="text-slate-500 dark:text-slate-400 text-sm animate-pulse">Initializing Nex Chat...</p>
         </div>
       </div>
     );

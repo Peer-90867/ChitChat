@@ -8,6 +8,20 @@ export interface Profile {
   bio?: string;
   last_seen?: string;
   updated_at?: string;
+  is_ai_bot?: boolean;
+  bot_persona?: string;
+  current_song?: {
+    title: string;
+    artist: string;
+    album_art?: string;
+    is_playing: boolean;
+  };
+  location?: {
+    latitude: number;
+    longitude: number;
+    updated_at: string;
+  };
+  close_friends?: string[]; // Array of user IDs
 }
 
 export interface Story {
@@ -18,6 +32,7 @@ export interface Story {
   caption?: string;
   created_at: string;
   expires_at: string;
+  is_close_friends_only?: boolean;
   profiles?: Profile;
   views?: StoryView[];
 }
@@ -36,11 +51,14 @@ export interface Room {
   code?: string;
   is_direct?: boolean;
   vanish_mode?: boolean;
+  type?: 'group' | 'direct' | 'channel' | 'community';
+  community_id?: string;
   created_by: string;
   created_at: string;
   other_user_profile?: Profile; // Virtual property for DMs
   unread_count?: number; // Virtual property
   last_message_at?: string; // Virtual property
+  streak_count?: number; // Virtual property
 }
 
 export interface Reaction {
@@ -48,6 +66,21 @@ export interface Reaction {
   message_id: string;
   user_id: string;
   emoji: string;
+  created_at: string;
+}
+
+export interface PollOption {
+  id: string;
+  text: string;
+  votes: string[]; // Array of user IDs
+}
+
+export interface Poll {
+  id: string;
+  question: string;
+  options: PollOption[];
+  is_multiple_choice: boolean;
+  expires_at?: string;
   created_at: string;
 }
 
@@ -66,9 +99,16 @@ export interface Message {
   is_starred?: boolean;
   is_bookmarked?: boolean;
   is_forwarded?: boolean;
+  is_view_once?: boolean;
+  is_viewed?: boolean;
+  translation?: string;
   reply_to_id?: string;
   reply_to?: string;
   reply_to_message?: Message;
+  poll?: Poll;
+  poll_id?: string;
+  scheduled_at?: string;
+  transcription?: string;
   link_preview?: {
     title?: string;
     description?: string;

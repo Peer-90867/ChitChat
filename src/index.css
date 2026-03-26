@@ -1,9 +1,29 @@
 @import "tailwindcss";
 
+@theme {
+  --color-whatsapp-bg: #0b141a;
+  --color-whatsapp-header: #202c33;
+  --color-whatsapp-input: #202c33;
+  --color-whatsapp-green: #00a884;
+  --color-whatsapp-encryption-bg: #182229;
+  --color-whatsapp-encryption-text: #ffd279;
+}
+
 @layer base {
   body {
-    @apply bg-slate-50 text-slate-900 dark:bg-[#020617] dark:text-slate-200 transition-colors duration-300;
+    @apply bg-slate-50 text-slate-900 dark:bg-whatsapp-bg dark:text-slate-200 transition-colors duration-300;
   }
+}
+
+.whatsapp-doodle {
+  background-image: url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png');
+  background-repeat: repeat;
+  background-size: 400px;
+  opacity: 0.06;
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  z-index: 0;
 }
 
 /* Custom Scrollbar */
@@ -16,10 +36,10 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #1e293b;
+  background: #374151;
   border-radius: 10px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #334155;
+  background: #4b5563;
 }
